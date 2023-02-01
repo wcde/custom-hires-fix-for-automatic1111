@@ -23,6 +23,8 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                          width=p.width, height=p.height, restore_faces=p.restore_faces, tiling=p.tiling,
                          enable_hr=p.enable_hr, hr_upscaler=p.hr_upscaler, hr_second_pass_steps=p.hr_second_pass_steps,
                          denoising_strength=p.denoising_strength, hr_scale=p.hr_scale)
+        self.hr_resize_x = p.hr_resize_x
+        self.hr_resize_y = p.hr_resize_y
         self.hr_passes = hr_passes
         self.hr_custom_upscaler = hr_custom_upscaler
         self.cfg_per_pass = cfg_per_pass
