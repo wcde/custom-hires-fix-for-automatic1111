@@ -1,4 +1,4 @@
-# Custom Hires Fix (webui Eextension)
+# Custom Hires Fix (webui Extension)
 
 - DDIM and PLMS samplers are not supported, don't use them
 - script can deal with extremely low CFG Scale, try experimenting with it
