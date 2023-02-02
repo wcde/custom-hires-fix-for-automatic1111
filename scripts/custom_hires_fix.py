@@ -71,9 +71,9 @@ class CustomHiresFix(scripts.Script):
         if p.sampling_step == (self.steps - 2) and self.first_pass_processing:  # UI bug
             self.pr.sampler_name = self.hr_sampler
         if self.second_pass_processing and self.hr_prog:
-            self.pr.cfg_scale = self.pr.cfg_scale - (self.force_details * 0.15)
+            self.pr.cfg_scale = self.pr.cfg_scale - (self.force_details * 0.14)
         if self.second_pass_processing and p.sampling_step != 0 and not self.hr_prog:
-            self.pr.cfg_scale = self.cfg - self.force_details
+            self.pr.cfg_scale = self.cfg
 
 
     def run(self, p: processing.StableDiffusionProcessingTxt2Img,
