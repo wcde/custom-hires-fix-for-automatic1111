@@ -39,7 +39,7 @@ class CustomHiresFix(scripts.Script):
         with gr.Blocks():
             with gr.Row():
                 force_details = gr.Slider(minimum=0, maximum=10, step=1, label="Force details", value=5)
-                hr_prog = gr.Checkbox(label="Smooth details", value=True)
+                hr_prog = gr.Checkbox(label="Smoothing", value=False)
                 hr_passes = gr.Slider(minimum=1, maximum=3, step=1, label="Passes", value=2)
         with gr.Accordion("Extra", open=False):
             with gr.Row():
