@@ -22,6 +22,7 @@ class CustomHiresFix(scripts.Script):
         self.proc = None
         self.callback_set = False
         self.stage = 'Gen'
+        self.last_step = 0
         self.original_denoise = 0.0
         self.original_cfg = 0
         self.first_cfg = 0
@@ -73,24 +74,25 @@ class CustomHiresFix(scripts.Script):
             return sampling.get_sigmas_polyexponential(n, 0.01, 15 if scheduler == 'High denoising' else 7, 0.5, self.device)
 
         is_last_step = p.sampling_step == p.total_sampling_steps - 2
-        if self.stage == 'Gen' and is_last_step:
-            self.stage = 'Stage 1'
-
-        if self.stage == 'Stage 1' and is_last_step:
-            self.proc.denoising_strength = self.original_denoise + self.first_denoise
-            self.proc.cfg_per_pass = self.first_cfg
-            self.stage = 'Stage 2'
-        elif self.stage == 'Stage 2' and is_last_step:
-            self.proc.denoising_strength = self.original_denoise + self.second_denoise
-            self.proc.cfg_per_pass = self.second_cfg
-            shared.disable_custom_hires_fix = False   # for xyz plot
-            self.stage = 'Completed'
+        is_duplicate = self.last_step == p.sampling_step
 
         if p.sampling_step != 0 and not is_last_step:
             self.proc.cfg_scale = self.original_cfg - max((self.first_cfg // 3) if self.stage == 'Stage 1' else (self.second_cfg // 3), 3)
 
-        self.proc.sampler_noise_scheduler_override = denoiser_override
+        if self.stage == 'Gen' and is_last_step and not is_duplicate:
+            self.stage = 'Stage 1'
+        elif self.stage == 'Stage 1' and is_last_step and not is_duplicate:
+            self.stage = 'Stage 2'
+        elif self.stage == 'Stage 2' and is_last_step and not is_duplicate:
+            shared.disable_custom_hires_fix = False   # for xyz plot
+            self.stage = 'Completed'
+
         self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 1' else self.second_sampler
+        self.proc.denoising_strength = self.original_denoise + (self.first_denoise if self.stage == 'Stage 1' else self.second_denoise)
+        self.proc.cfg_per_pass = self.first_cfg if self.stage == 'Stage 1' else self.second_cfg
+        self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 2' else self.second_sampler
+
+        self.last_step = p.sampling_step
 
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
