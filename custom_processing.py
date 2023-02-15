@@ -27,7 +27,7 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
         self.hr_resize_x = p.hr_resize_x
         self.hr_resize_y = p.hr_resize_y
         self.hr_steps = p.hr_second_pass_steps
-        self.pass_num = 2 if first_upscaler != 'None' or second_upscaler != 'None' else 1
+        self.pass_num = 2 if first_upscaler != 'None' and second_upscaler != 'None' else 1
         self.first_upscaler = first_upscaler
         self.second_upscaler = second_upscaler
         self.cfg_per_pass = 0
@@ -52,7 +52,7 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
         add_target_height = (self.hr_upscale_to_y - self.height) / self.pass_num
 
         for stage in range(1, self.pass_num + 1):
-            self.hr_second_pass_steps = self.hr_steps + max(self.steps - self.hr_steps, 0) // 2 if stage == 1 else self.hr_steps
+            self.hr_second_pass_steps = self.hr_steps + max(self.steps - self.hr_steps, 0) // 2 if stage == 1 and self.pass_num != 1 else self.hr_steps
             self.cfg_scale = self.cfg_scale + self.cfg_per_pass
 
             if stage == self.pass_num:
