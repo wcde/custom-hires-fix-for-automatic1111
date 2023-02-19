@@ -92,12 +92,17 @@ class CustomHiresFix(scripts.Script):
         self.proc.cfg_per_pass = self.first_cfg if self.stage == 'Stage 1' else self.second_cfg
         self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 2' else self.second_sampler
 
+        if self.stage == 'Completed':
+            self.proc.denoising_strength = self.original_denoise
+            self.proc.cfg_per_pass = self.original_cfg
+
         self.last_step = p.sampling_step
 
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
                 first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, disable):
         if disable or p.denoising_strength == None:
+            self.stage = 'Gen'
             return
         if hasattr(shared, 'disable_custom_hires_fix'):   # for xyz plot
             if shared.disable_custom_hires_fix:
