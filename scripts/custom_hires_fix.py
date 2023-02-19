@@ -90,7 +90,6 @@ class CustomHiresFix(scripts.Script):
         self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 1' else self.second_sampler
         self.proc.denoising_strength = self.original_denoise + (self.first_denoise if self.stage == 'Stage 1' else self.second_denoise)
         self.proc.cfg_per_pass = self.first_cfg if self.stage == 'Stage 1' else self.second_cfg
-        self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 2' else self.second_sampler
 
         if self.stage == 'Completed':
             self.proc.denoising_strength = self.original_denoise
