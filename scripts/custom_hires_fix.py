@@ -106,7 +106,7 @@ class CustomHiresFix(scripts.Script):
         if hasattr(shared, 'disable_custom_hires_fix'):   # for xyz plot
             if shared.disable_custom_hires_fix:
                 return
-        if self.stage == 'Completed':
+        if self.stage == 'Completed' or 'Stage 2':
             self.stage = 'Gen'
         self.first_cfg = first_cfg * 2
         self.second_cfg = second_cfg * 2
