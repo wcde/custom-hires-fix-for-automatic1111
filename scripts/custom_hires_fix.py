@@ -97,7 +97,7 @@ class CustomHiresFix(scripts.Script):
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
                 first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, disable):
-        if disable:
+        if disable or p.denoising_strength == None:
             return
         if hasattr(shared, 'disable_custom_hires_fix'):   # for xyz plot
             if shared.disable_custom_hires_fix:
