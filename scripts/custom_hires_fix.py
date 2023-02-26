@@ -4,6 +4,8 @@ import gradio as gr
 from k_diffusion import sampling
 import custom_processing
 
+from modules.sd_hijack_clip import FrozenCLIPEmbedderWithCustomWords
+
 try:
     import resize_right
 except Exception:
@@ -47,9 +49,9 @@ class CustomHiresFix(scripts.Script):
         with gr.Accordion(label='Custom hires fix', open=False):
             with gr.Row():
                 first_upscaler = gr.Dropdown(['From webui', 'Latent(lanczos2)', 'Latent(nearest-exact)', 'None'],
-                                             label='First upscaler', value='From webui')
+                                             label='First upscaler', value='Latent(lanczos2)')
                 second_upscaler = gr.Dropdown(['From webui', 'Latent(lanczos2)', 'Latent(nearest-exact)', 'None'],
-                                              label='Second upscaler', value='Latent(lanczos2)')
+                                              label='Second upscaler', value='From webui')
             with gr.Row():
                 first_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (1)", value=3)
                 second_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (2)", value=5)
@@ -57,16 +59,17 @@ class CustomHiresFix(scripts.Script):
                 first_denoise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01, label="Denoise strength shift (1)", value=-0.05)
                 second_denoise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01, label="Denoise strength shift (2)", value=0.0)
             with gr.Row():
-                first_sampler = gr.Dropdown(['DPM++ 2M', 'Euler a'], label='Sampler (1)', value='DPM++ 2M')
-                second_sampler = gr.Dropdown(['DPM++ 2M', 'Euler a'], label='Sampler (2)', value='DPM++ 2M')
+                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (1)', value='DPM++ 2M')
+                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (2)', value='DPMU')
             with gr.Row():
-                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (1)', value='High denoising')
+                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (1)', value='Low denoising')
                 second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (2)', value='Low denoising')
             with gr.Row():
+                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01, label="DPMU output factor (color correction)", value=0.85)
                 disable = gr.Checkbox(label='Disable extension', value=False)
 
         return [first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, disable]
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable]
 
     def denoise_callback(self, p: script_callbacks.CFGDenoiserParams):
         def denoiser_override(n):
@@ -94,12 +97,11 @@ class CustomHiresFix(scripts.Script):
         if self.stage == 'Completed':
             self.proc.denoising_strength = self.original_denoise
             self.proc.cfg_per_pass = self.original_cfg
-
         self.last_step = p.sampling_step
 
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, disable):
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable):
         if disable or p.denoising_strength == None:
             self.stage = 'Gen'
             return
@@ -119,6 +121,8 @@ class CustomHiresFix(scripts.Script):
         custom = custom_processing.SDProcessing(p, first_upscaler, second_upscaler)
         p.sample = custom.sample
         self.proc = custom
+        custom_processing.dpmu_factor = dpmu_factor
+
         if not self.callback_set:
             script_callbacks.on_cfg_denoiser(self.denoise_callback)
             self.original_cfg = p.cfg_scale

@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import types
 from PIL import Image
+from tqdm import trange
+
 import modules.images as images
 
 from modules.shared import opts
@@ -10,6 +12,32 @@ from modules import processing, sd_samplers, shared, devices
 
 opt_C = 4
 opt_f = 8
+
+dpmu_factor: float = 0.85
+
+
+@torch.no_grad()
+def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None):
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()
+    t_fn = lambda sigma: sigma.log().neg()
+    last_x = None
+    for i in trange(len(sigmas) - 1, disable=disable):
+        denoised = x if i == 0 else model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+        h = t_next - t
+        if sigmas[i + 1] == 0:
+            return torch.lerp(denoised, last_x, 0.5) * dpmu_factor
+        else:
+            h_last = t - t_fn(sigmas[i - 1])
+            r = h_last / h
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / 2
+        if sigmas[i + 2] == 0:
+            last_x = x
+    return x
 
 
 class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
@@ -113,15 +141,17 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                                                                          samples), samples)
                 else:
                     image_conditioning = self.txt2img_image_conditioning(samples)
-
             shared.state.nextjob()
-            self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
+            if self.sampler_name == 'DPMU':
+                self.sampler = sd_samplers.create_sampler('DPM++ 2M', self.sd_model)
+                self.sampler.func = sampler_dpmu
+            else:
+                self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
             self.noise = processing.create_random_tensors(samples.shape[1:], seeds=seeds, subseeds=subseeds,
                                                           subseed_strength=subseed_strength,
                                                           p=self, seed_resize_from_w=self.seed_resize_from_w,
                                                           seed_resize_from_h=self.seed_resize_from_h)
             x = None
-            devices.torch_gc()
             samples = self.sampler.sample_img2img(self, samples, self.noise, conditioning, unconditional_conditioning,
                                                   steps=self.hr_second_pass_steps or self.steps,
                                                   image_conditioning=image_conditioning)
