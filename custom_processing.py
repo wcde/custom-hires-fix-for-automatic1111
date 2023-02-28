@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import types
@@ -105,7 +106,10 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                     else:
                         image_conditioning = self.txt2img_image_conditioning(samples)
                 else:
+                    samples = torch.clamp(samples, min=-1.0, max=1.0)
                     decoded_samples = processing.decode_first_stage(self.sd_model, samples)
+                    if(math.isnan(decoded_samples.min())):
+                        decoded_samples = processing.decode_first_stage(self.sd_model, samples)
                     lowres_samples = torch.clamp((decoded_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
                     batch_images = []
@@ -120,6 +124,7 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                         image = np.moveaxis(image, 2, 0)
                         batch_images.append(image)
 
+                    decoded_samples = torch.clamp(decoded_samples, min=-1.0, max=1.0)
                     decoded_samples = torch.from_numpy(np.array(batch_images))
                     decoded_samples = decoded_samples.to(shared.device)
                     decoded_samples = 2. * decoded_samples - 1.
