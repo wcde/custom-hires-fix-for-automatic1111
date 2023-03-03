@@ -1,4 +1,5 @@
 import math
+from torchvision import transforms
 import numpy as np
 import torch
 import types
@@ -15,6 +16,7 @@ opt_C = 4
 opt_f = 8
 
 dpmu_factor: float = 0.85
+clamp_vae: float = 3.0
 
 
 @torch.no_grad()
@@ -38,6 +40,7 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / 2
         if sigmas[i + 2] == 0:
             last_x = x
+        torch.clamp(x, -1.0, 1.0)
     return x
 
 
@@ -107,6 +110,9 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                         image_conditioning = self.txt2img_image_conditioning(samples)
                 else:
                     decoded_samples = processing.decode_first_stage(self.sd_model, samples)
+                    if math.isnan(decoded_samples.min()):
+                        samples = torch.clamp(samples, -clamp_vae, clamp_vae)
+                        decoded_samples = processing.decode_first_stage(self.sd_model, samples)
                     lowres_samples = torch.clamp((decoded_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
                     batch_images = []
@@ -123,10 +129,9 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
 
                     decoded_samples = torch.from_numpy(np.array(batch_images))
                     decoded_samples = decoded_samples.to(shared.device)
-                    decoded_samples = 2. * decoded_samples - 1.
+                    decoded_samples = 2.0 * decoded_samples - 1.0
 
                     samples = self.sd_model.get_first_stage_encoding(self.sd_model.encode_first_stage(decoded_samples))
-
                     image_conditioning = self.img2img_image_conditioning(decoded_samples, samples)
 
             else:

@@ -4,8 +4,6 @@ import gradio as gr
 from k_diffusion import sampling
 import custom_processing
 
-from modules.sd_hijack_clip import FrozenCLIPEmbedderWithCustomWords
-
 try:
     import resize_right
 except Exception:
@@ -66,10 +64,12 @@ class CustomHiresFix(scripts.Script):
                 second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (2)', value='Low denoising')
             with gr.Row():
                 dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01, label="DPMU output factor (color correction)", value=0.85)
+                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN fix)", value=3.0)
+            with gr.Row():
                 disable = gr.Checkbox(label='Disable extension', value=False)
 
         return [first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable]
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable, clamp_vae]
 
     def denoise_callback(self, p: script_callbacks.CFGDenoiserParams):
         def denoiser_override(n):
@@ -101,7 +101,7 @@ class CustomHiresFix(scripts.Script):
 
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable):
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable, clamp_vae):
         if disable or p.denoising_strength == None:
             self.stage = 'Gen'
             return
@@ -122,6 +122,7 @@ class CustomHiresFix(scripts.Script):
         p.sample = custom.sample
         self.proc = custom
         custom_processing.dpmu_factor = dpmu_factor
+        custom_processing.clamp_vae = clamp_vae
 
         if not self.callback_set:
             script_callbacks.on_cfg_denoiser(self.denoise_callback)
