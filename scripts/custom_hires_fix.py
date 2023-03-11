@@ -90,11 +90,11 @@ class CustomHiresFix(scripts.Script):
         if self.stage == 'Gen' and is_last_step and not is_duplicate:
             self.stage = 'Stage 1'
             self.proc.sampler_noise_scheduler_override = None if self.first_noise_scheduler == 'Default' else denoiser_override
-            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
+            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.6 + self.dpmu_step_shift
         elif self.stage == 'Stage 1' and is_last_step and not is_duplicate:
             self.stage = 'Stage 2'
             self.proc.sampler_noise_scheduler_override = None if self.second_noise_scheduler == 'Default' else denoiser_override
-            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
+            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.6 + self.dpmu_step_shift
         elif self.stage == 'Stage 2' and is_last_step and not is_duplicate:
             shared.disable_custom_hires_fix = False   # for xyz plot
             self.stage = 'Completed'
