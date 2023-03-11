@@ -19,6 +19,7 @@ class CustomHiresFix(scripts.Script):
     def __init__(self):
         super().__init__()
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.disable = False
         self.proc = None
         self.callback_set = False
         self.stage = 'Gen'
@@ -33,6 +34,7 @@ class CustomHiresFix(scripts.Script):
         self.second_noise_scheduler = ''
         self.first_denoise = 0.0
         self.second_denoise = 0.0
+        self.dpmu_step_shift = 0.3
 
     def title(self):
         return "Custom hires fix"
@@ -41,6 +43,7 @@ class CustomHiresFix(scripts.Script):
         if not is_img2img:
             return scripts.AlwaysVisible
         else:
+            self.disable = True
             return False
 
     def ui(self, is_img2img):
@@ -60,16 +63,18 @@ class CustomHiresFix(scripts.Script):
                 first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (1)', value='DPM++ 2M')
                 second_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (2)', value='DPMU')
             with gr.Row():
-                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (1)', value='Low denoising')
-                second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising'], label='Noise scheduler (2)', value='Low denoising')
+                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'], label='Noise scheduler (1)', value='Low denoising')
+                second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'], label='Noise scheduler (2)', value='Low denoising')
             with gr.Row():
-                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01, label="DPMU output factor (color correction)", value=0.85)
-                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN fix)", value=3.0)
+                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01, label="DPMU output factor (color correction)", value=0.9)
+                dpmu_stap_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01, label="DPMU step shift (color correction)", value=0.0)
             with gr.Row():
+                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
                 disable = gr.Checkbox(label='Disable extension', value=False)
 
         return [first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable, clamp_vae]
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable,
+                clamp_vae, dpmu_stap_shift]
 
     def denoise_callback(self, p: script_callbacks.CFGDenoiserParams):
         def denoiser_override(n):
@@ -84,8 +89,12 @@ class CustomHiresFix(scripts.Script):
 
         if self.stage == 'Gen' and is_last_step and not is_duplicate:
             self.stage = 'Stage 1'
+            self.proc.sampler_noise_scheduler_override = None if self.first_noise_scheduler == 'Default' else denoiser_override
+            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
         elif self.stage == 'Stage 1' and is_last_step and not is_duplicate:
             self.stage = 'Stage 2'
+            self.proc.sampler_noise_scheduler_override = None if self.second_noise_scheduler == 'Default' else denoiser_override
+            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
         elif self.stage == 'Stage 2' and is_last_step and not is_duplicate:
             shared.disable_custom_hires_fix = False   # for xyz plot
             self.stage = 'Completed'
@@ -101,8 +110,9 @@ class CustomHiresFix(scripts.Script):
 
     def process(self, p: processing.StableDiffusionProcessingTxt2Img,
                 first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable, clamp_vae):
-        if disable or p.denoising_strength == None:
+                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable,
+                clamp_vae, dpmu_step_shift):
+        if disable or self.disable or p.denoising_strength == None:
             self.stage = 'Gen'
             return
         if hasattr(shared, 'disable_custom_hires_fix'):   # for xyz plot
@@ -118,10 +128,12 @@ class CustomHiresFix(scripts.Script):
         self.second_noise_scheduler = second_noise_scheduler
         self.first_denoise = first_denoise
         self.second_denoise = second_denoise
+        self.dpmu_step_shift = dpmu_step_shift
         custom = custom_processing.SDProcessing(p, first_upscaler, second_upscaler)
         p.sample = custom.sample
         self.proc = custom
         custom_processing.dpmu_factor = dpmu_factor
+        custom_processing.first_sampler_name = first_sampler
         custom_processing.clamp_vae = clamp_vae
 
         if not self.callback_set:

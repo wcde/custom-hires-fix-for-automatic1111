@@ -16,7 +16,9 @@ opt_C = 4
 opt_f = 8
 
 dpmu_factor: float = 0.85
+dpmu_step_shift: float = 2.0
 clamp_vae: float = 3.0
+first_sampler_name: str = ''
 
 
 @torch.no_grad()
@@ -27,6 +29,8 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
     t_fn = lambda sigma: sigma.log().neg()
     last_x = None
     for i in trange(len(sigmas) - 1, disable=disable):
+        if shared.state.interrupted:
+            return x
         denoised = x if i == 0 else model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
@@ -37,7 +41,7 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
         else:
             h_last = t - t_fn(sigmas[i - 1])
             r = h_last / h
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / 2
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / dpmu_step_shift
         if sigmas[i + 2] == 0:
             last_x = x
         torch.clamp(x, -1.0, 1.0)
@@ -142,12 +146,15 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                     samples = resize(samples, scale_factors=(scale, scale),
                                      interp_method=getattr(interp_methods, 'lanczos2'))
 
+
                 if getattr(self, "inpainting_mask_weight", shared.opts.inpainting_mask_weight) < 1.0:
                     image_conditioning = self.img2img_image_conditioning(processing.decode_first_stage(self.sd_model,
                                                                          samples), samples)
                 else:
                     image_conditioning = self.txt2img_image_conditioning(samples)
             shared.state.nextjob()
+            if stage == 1:
+                self.sampler_name = first_sampler_name
             if self.sampler_name == 'DPMU':
                 self.sampler = sd_samplers.create_sampler('DPM++ 2M', self.sd_model)
                 self.sampler.func = sampler_dpmu
@@ -159,8 +166,8 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                                                           seed_resize_from_h=self.seed_resize_from_h)
             x = None
             samples = self.sampler.sample_img2img(self, samples, self.noise, conditioning, unconditional_conditioning,
-                                                  steps=self.hr_second_pass_steps or self.steps,
-                                                  image_conditioning=image_conditioning)
+                                                      steps=self.hr_second_pass_steps or self.steps,
+                                                      image_conditioning=image_conditioning)
 
             devices.torch_gc()
             self.seed_resize_from_w = target_width
