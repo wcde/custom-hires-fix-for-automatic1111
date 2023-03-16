@@ -20,6 +20,9 @@ dpmu_step_shift: float = 2.0
 clamp_vae: float = 3.0
 first_sampler_name: str = ''
 
+hr_uc = None
+hr_c = None
+
 
 @torch.no_grad()
 def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None):
@@ -30,6 +33,7 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
     last_x = None
     for i in trange(len(sigmas) - 1, disable=disable):
         if shared.state.interrupted:
+            callback({'x': x, 'i': len(sigmas) - 1, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': None})
             return x
         denoised = x if i == 0 else model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
@@ -165,7 +169,7 @@ class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
                                                           p=self, seed_resize_from_w=self.seed_resize_from_w,
                                                           seed_resize_from_h=self.seed_resize_from_h)
             x = None
-            samples = self.sampler.sample_img2img(self, samples, self.noise, conditioning, unconditional_conditioning,
+            samples = self.sampler.sample_img2img(self, samples, self.noise, hr_c or conditioning, hr_uc or unconditional_conditioning,
                                                       steps=self.hr_second_pass_steps or self.steps,
                                                       image_conditioning=image_conditioning)
 
