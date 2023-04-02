@@ -1,170 +1,148 @@
-import torch
-from modules import scripts, script_callbacks, processing, shared, extra_networks, devices, prompt_parser
+import sys
+from os.path import exists
+from modules import scripts, shared, prompt_parser
 import gradio as gr
-from k_diffusion import sampling
 import custom_processing
+import utils
 
-try:
-    import resize_right
-except Exception:
-    import pip
+utils.safe_import('kornia')
+utils.safe_import('omegaconf')
+from omegaconf import DictConfig, OmegaConf
 
-    if hasattr(pip, 'main'):
-        pip.main(['install', 'resize-right'])
-    else:
-        pip._internal.main(['install', 'resize-right'])
-
-
-cached_c = [None, None]
-cached_uc = [None, None]
-
-
-def get_conds_with_caching(function, required_prompts, steps, cache):
-    if cache[0] is not None and (required_prompts, steps) == cache[0]:
-        return cache[1]
-
-    with devices.autocast():
-        cache[1] = function(shared.sd_model, required_prompts, steps)
-
-    cache[0] = (required_prompts, steps)
-    return cache[1]
+cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
+uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
+config_path = './extensions/custom-hires-fix-for-automatic1111/config.yaml'
 
 
 class CustomHiresFix(scripts.Script):
     def __init__(self):
         super().__init__()
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.disable = False
-        self.proc = None
-        self.callback_set = False
-        self.stage = 'Gen'
-        self.last_step = 0
-        self.original_denoise = 0.0
-        self.original_cfg = 0
-        self.first_cfg = 0
-        self.second_cfg = 0
-        self.first_sampler = ''
-        self.second_sampler = ''
-        self.first_noise_scheduler = ''
-        self.second_noise_scheduler = ''
-        self.first_denoise = 0.0
-        self.second_denoise = 0.0
-        self.dpmu_step_shift = 0.3
+        if not exists(config_path):
+            open(config_path, 'w').close()
+        self.config: DictConfig = OmegaConf.load(config_path)
+        self.config.callback_set = False
 
     def title(self):
-        return "Custom hires fix"
+        return "Custom Hires Fix"
 
     def show(self, is_img2img):
-        if not is_img2img:
-            return scripts.AlwaysVisible
-        else:
-            self.disable = True
-            return False
+        return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
         with gr.Accordion(label='Custom hires fix', open=False):
-            prompt = gr.Textbox(label='Prompt for upscale', placeholder='Leave empty for using generation prompt')
-            negative_prompt = gr.Textbox(label='Negative prompt for upscale', placeholder='Leave empty for using generation negative prompt')
+            enable = gr.Checkbox(label='Enable extension', value=self.config.get('enable', False))
             with gr.Row():
-                first_upscaler = gr.Dropdown(['From webui', 'Latent(lanczos2)', 'Latent(nearest-exact)', 'None'],
-                                             label='First upscaler', value='Latent(lanczos2)')
-                second_upscaler = gr.Dropdown(['From webui', 'Latent(lanczos2)', 'Latent(nearest-exact)', 'None'],
-                                              label='Second upscaler', value='From webui')
+                width = gr.Slider(minimum=512, maximum=2048, step=8,
+                                  label="Upscale width to",
+                                  value=self.config.get('width', 1024), allow_flagging='never', show_progress=False)
+                height = gr.Slider(minimum=512, maximum=2048, step=8,
+                                   label="Upscale height to",
+                                   value=self.config.get('height', 0), allow_flagging='never', show_progress=False)
+                steps = gr.Slider(minimum=5, maximum=25, step=1,
+                                  label="Steps ",
+                                  value=self.config.get('steps', 15))
+
             with gr.Row():
-                first_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (1)", value=3)
-                second_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (2)", value=5)
+                prompt = gr.Textbox(label='Prompt for upscale',
+                                    placeholder='Leave empty for using generation prompt',
+                                    value=self.config.get('prompt', ''))
             with gr.Row():
-                first_denoise = gr.Slider(minimum=-0.5, maximum=0.2, step=0.01, label="Denoise strength shift (1)", value=-0.05)
-                second_denoise = gr.Slider(minimum=-0.5, maximum=0.2, step=0.01, label="Denoise strength shift (2)", value=0.0)
+                negative_prompt = gr.Textbox(label='Negative prompt for upscale',
+                                             placeholder='Leave empty for using generation negative prompt',
+                                             value=self.config.get('negative_prompt', ''))
             with gr.Row():
-                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (1)', value='DPM++ 2M')
-                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a'], label='Sampler (2)', value='DPMU')
+                first_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
+                                                if x.name not in ['None', 'Lanczos', 'Nearest']]],
+                                             label='First upscaler',
+                                             value=self.config.get('first_upscaler', 'R-ESRGAN 4x+'))
+                second_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
+                                                 if x.name not in ['None', 'Lanczos', 'Nearest']]],
+                                              label='Second upscaler',
+                                              value=self.config.get('second_upscaler', 'R-ESRGAN 4x+'))
             with gr.Row():
-                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'], label='Noise scheduler (1)', value='Low denoising')
-                second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'], label='Noise scheduler (2)', value='Low denoising')
+                first_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (1)",
+                                      value=self.config.get('first_cfg', 5))
+                second_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (2)",
+                                       value=self.config.get('second_cfg', 5))
             with gr.Row():
-                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01, label="DPMU output factor (color correction)", value=0.9)
-                dpmu_stap_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01, label="DPMU step shift (color correction)", value=0.0)
+                first_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (1)",
+                                          value=self.config.get('first_denoise', 0.50))
+                second_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (2)",
+                                           value=self.config.get('second_denoise', 0.50))
             with gr.Row():
-                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
-                disable = gr.Checkbox(label='Disable extension', value=False)
+                first_morphological_noise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01,
+                                                      label="Morphological noise (0.0 to disable) (1)",
+                                                      value=self.config.get('first_morphological_noise', 0.0))
+                second_morphological_noise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01,
+                                                       label="Morphological noise (0.0 to disable) (2)",
+                                                       value=self.config.get('second_morphological_noise', 0.0))
+            with gr.Row():
+                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
+                                            value=self.config.get('first_sampler', 'DPMU'))
+                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (2)',
+                                             value=self.config.get('second_sampler', 'DPMU'))
+            with gr.Row():
+                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'],
+                                                    label='Noise scheduler (1)',
+                                                    value=self.config.get('first_noise_scheduler', 'Low denoising'))
+                second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'],
+                                                     label='Noise scheduler (2)',
+                                                     value=self.config.get('second_noise_scheduler', 'Low denoising'))
+            with gr.Row():
+                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01,
+                                        label="DPMU output factor (color correction)",
+                                        value=self.config.get('dpmu_factor', 0.9))
+                dpmu_step_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01,
+                                            label="DPMU step shift (color correction)",
+                                            value=self.config.get('dpmu_step_shift', 0.0))
+        if is_img2img:
+            width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
+            height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
+        else:
+            width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
+            height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
-        return [first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable,
-                clamp_vae, dpmu_stap_shift, prompt, negative_prompt]
+        ui = [enable, width, height, steps,
+              first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
+              first_morphological_noise, second_morphological_noise,
+              first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
+              dpmu_step_shift, prompt, negative_prompt]
+        for elem in ui:
+            setattr(elem, "do_not_save_to_config", True)
+        return ui
 
-    def denoise_callback(self, p: script_callbacks.CFGDenoiserParams):
-        def denoiser_override(n):
-            scheduler = self.first_noise_scheduler if self.stage == 'Stage 1' else self.second_noise_scheduler
-            return sampling.get_sigmas_polyexponential(n, 0.01, 15 if scheduler == 'High denoising' else 7, 0.5, self.device)
 
-        is_last_step = p.sampling_step == p.total_sampling_steps - 2
-        is_duplicate = self.last_step == p.sampling_step
-
-        if p.sampling_step != 0 and not is_last_step:
-            self.proc.cfg_scale = self.original_cfg - max((self.first_cfg // 3) if self.stage == 'Stage 1' else (self.second_cfg // 3), 3)
-
-        if self.stage == 'Gen' and is_last_step and not is_duplicate:
-            self.stage = 'Stage 1'
-            self.proc.sampler_noise_scheduler_override = None if self.first_noise_scheduler == 'Default' else denoiser_override
-            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
-            for script in scripts.scripts_txt2img.scripts:
-                if 'two_shot' in str(script):
-                    script.enabled = False
-
-        elif self.stage == 'Stage 1' and is_last_step and not is_duplicate:
-            self.stage = 'Stage 2'
-            self.proc.sampler_noise_scheduler_override = None if self.second_noise_scheduler == 'Default' else denoiser_override
-            custom_processing.dpmu_step_shift = 2.0 if self.first_noise_scheduler == 'Default' else 1.7 + self.dpmu_step_shift
-        elif self.stage == 'Stage 2' and is_last_step and not is_duplicate:
-            shared.disable_custom_hires_fix = False   # for xyz plot
-            self.stage = 'Completed'
-
-        self.proc.sampler_name = self.first_sampler if self.stage == 'Stage 1' else self.second_sampler
-        self.proc.denoising_strength = self.original_denoise + (self.first_denoise if self.stage == 'Stage 1' else self.second_denoise)
-        self.proc.cfg_per_pass = self.first_cfg if self.stage == 'Stage 1' else self.second_cfg
-
-        if self.stage == 'Completed':
-            self.proc.denoising_strength = self.original_denoise
-            self.proc.cfg_per_pass = self.original_cfg
-        self.last_step = p.sampling_step
-
-    def process(self, p: processing.StableDiffusionProcessingTxt2Img,
-                first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor, disable,
-                clamp_vae, dpmu_step_shift, prompt, negative_prompt):
-        if disable or self.disable or p.denoising_strength == None:
-            self.stage = 'Gen'
-            return
-        if hasattr(shared, 'disable_custom_hires_fix'):   # for xyz plot
-            if shared.disable_custom_hires_fix:
-                return
-        if self.stage == 'Completed' or 'Stage 2':
-            self.stage = 'Gen'
-        self.first_cfg = first_cfg * 2
-        self.second_cfg = second_cfg * 2
-        self.first_sampler = first_sampler
-        self.second_sampler = second_sampler
-        self.first_noise_scheduler = first_noise_scheduler
-        self.second_noise_scheduler = second_noise_scheduler
-        self.first_denoise = first_denoise
-        self.second_denoise = second_denoise
-        self.dpmu_step_shift = dpmu_step_shift
-        custom = custom_processing.SDProcessing(p, first_upscaler, second_upscaler)
-        p.sample = custom.sample
-        self.proc = custom
-        custom_processing.dpmu_factor = dpmu_factor
-        custom_processing.first_sampler_name = first_sampler
-        custom_processing.clamp_vae = clamp_vae
-
-        if prompt != '':
-            custom_processing.hr_c = get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, [prompt], p.steps, cached_c)
-        if negative_prompt != '':
-            custom_processing.hr_uc = get_conds_with_caching(prompt_parser.get_learned_conditioning, [negative_prompt], p.steps, cached_uc)
-
-        if not self.callback_set:
-            script_callbacks.on_cfg_denoiser(self.denoise_callback)
-            self.original_cfg = p.cfg_scale
-            self.original_denoise = p.denoising_strength
-            self.stage = 'Gen'
-            self.callback_set = True
+    def postprocess(self, p, processed,
+                    enable, width, height, steps,
+                    first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
+                    first_morphological_noise, second_morphological_noise,
+                    first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
+                    dpmu_step_shift, prompt, negative_prompt
+                    ):
+        if not enable:
+            return processed
+        self.config.width = width
+        self.config.height = height
+        self.config.prompt = prompt
+        self.config.negative_prompt = negative_prompt
+        self.config.steps = steps
+        self.config.first_cfg = first_cfg
+        self.config.second_cfg = second_cfg
+        self.config.first_sampler = first_sampler
+        self.config.second_sampler = second_sampler
+        self.config.first_upscaler = first_upscaler
+        self.config.second_upscaler = second_upscaler
+        self.config.first_noise_scheduler = first_noise_scheduler
+        self.config.second_noise_scheduler = second_noise_scheduler
+        self.config.first_denoise = first_denoise
+        self.config.second_denoise = second_denoise
+        self.config.first_morphological_noise = first_morphological_noise
+        self.config.second_morphological_noise = second_morphological_noise
+        self.config.dpmu_step_shift = dpmu_step_shift
+        self.config.dpmu_factor = dpmu_factor
+        self.config.first_sampler_name = first_sampler
+        self.config.orig_cfg = p.cfg_scale
+        self.config.callback_set = False
+        OmegaConf.save(self.config, config_path)
+        custom_processing._config = self.config
+        return custom_processing.upscale(p, processed, self.config)

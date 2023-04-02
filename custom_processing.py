@@ -1,27 +1,20 @@
 import math
-from torchvision import transforms
+import kornia
+from PIL import Image
+from omegaconf import DictConfig
 import numpy as np
 import torch
-import types
-from PIL import Image
 from tqdm import trange
-
+from k_diffusion import sampling
 import modules.images as images
+import utils
+from modules import processing, sd_samplers, shared, devices, sd_samplers_kdiffusion, prompt_parser, script_callbacks
 
-from modules.shared import opts
-from resize_right import resize, interp_methods
-from modules import processing, sd_samplers, shared, devices
 
-opt_C = 4
-opt_f = 8
-
-dpmu_factor: float = 0.85
-dpmu_step_shift: float = 2.0
-clamp_vae: float = 3.0
-first_sampler_name: str = ''
-
-hr_uc = None
-hr_c = None
+_dpmu_step_shift = 2.0
+_dpmu_factor = 1.0
+_cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
+_uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
 
 
 @torch.no_grad()
@@ -41,140 +34,86 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
         t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
         h = t_next - t
         if sigmas[i + 1] == 0:
-            return torch.lerp(denoised, last_x, 0.5) * dpmu_factor
+            return torch.lerp(denoised, last_x, 0.5) * _dpmu_factor
         else:
             h_last = t - t_fn(sigmas[i - 1])
             r = h_last / h
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / dpmu_step_shift
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * (1 + 1 / (2 * r)) * denoised / _dpmu_step_shift
         if sigmas[i + 2] == 0:
             last_x = x
-        torch.clamp(x, -1.0, 1.0)
+        torch.clamp(x, -3.0, 3.0)
     return x
 
 
-class SDProcessing(processing.StableDiffusionProcessingTxt2Img):
-    def __init__(self, p: processing.StableDiffusionProcessingTxt2Img, first_upscaler, second_upscaler):
-        super().__init__(sd_model=shared.sd_model, outpath_samples=opts.outdir_samples or opts.outdir_txt2img_samples,
-                         outpath_grids=opts.outdir_grids or opts.outdir_txt2img_grids, prompt=p.prompt,
-                         negative_prompt=p.negative_prompt, seed=p.seed, subseed=p.subseed,
-                         subseed_strength=p.subseed_strength,
-                         seed_resize_from_h=p.seed_resize_from_h, seed_resize_from_w=p.seed_resize_from_w,
-                         sampler_name=p.sampler_name,
-                         batch_size=p.batch_size, n_iter=p.n_iter, steps=p.steps, cfg_scale=p.cfg_scale,
-                         width=p.width, height=p.height, restore_faces=p.restore_faces, tiling=p.tiling,
-                         enable_hr=p.enable_hr, hr_upscaler=p.hr_upscaler, hr_second_pass_steps=p.hr_second_pass_steps,
-                         denoising_strength=p.denoising_strength, hr_scale=p.hr_scale)
-        self.hr_resize_x = p.hr_resize_x
-        self.hr_resize_y = p.hr_resize_y
-        self.hr_steps = p.hr_second_pass_steps
-        self.pass_num = 2 if first_upscaler != 'None' and second_upscaler != 'None' else 1
-        self.first_upscaler = first_upscaler
-        self.second_upscaler = second_upscaler
-        self.cfg_per_pass = 0
-        self.init(None, None, None)
+def upscale(p: processing.StableDiffusionProcessing, processed: processing.Processed, config: DictConfig):
+    ratio = p.width / p.height
+    config.width = config.width if config.width > 0 else int(config.height * ratio)
+    config.height = config.height if config.height > 0 else int(config.width / ratio)
+    for i in [1, 2]:
+        def denoiser_override(n):
+            scheduler = config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
+            return sampling.get_sigmas_polyexponential(n, 0.01, 15 if scheduler == 'High denoising' else 7, 0.5,
+                                                       devices.device)
 
-    def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
-        self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
-        latent_scale_mode = shared.latent_upscale_modes.get(self.hr_upscaler, None) \
-            if self.hr_upscaler is not None else shared.latent_upscale_modes.get(shared.latent_upscale_default_mode, "nearest")
+        def denoise_callback(denoiser_params: script_callbacks.CFGDenoiserParams):
+            if denoiser_params.sampling_step > 0:
+                p.cfg_scale = config.orig_cfg
 
-        x = processing.create_random_tensors([opt_C, self.height // opt_f, self.width // opt_f], seeds=seeds,
-                                             subseeds=subseeds,
-                                             subseed_strength=self.subseed_strength,
-                                             seed_resize_from_h=self.seed_resize_from_h,
-                                             seed_resize_from_w=self.seed_resize_from_w, p=self)
-        samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning,
-                                      image_conditioning=self.txt2img_image_conditioning(x))
+        if config.callback_set is False:
+            script_callbacks.on_cfg_denoiser(denoise_callback)
+            config.callback_set = True
 
-        if not self.enable_hr:
-            return samples
-        add_target_width = (self.hr_upscale_to_x - self.width) / self.pass_num
-        add_target_height = (self.hr_upscale_to_y - self.height) / self.pass_num
+        if (config.first_sampler if i == 1 else config.second_sampler) == 'DPMU':
+            sampler: sd_samplers_kdiffusion.KDiffusionSampler = sd_samplers.create_sampler('DPM++ 2M', shared.sd_model)
+            sampler.func = sampler_dpmu
+        else:
+            sampler = sd_samplers.create_sampler(config.first_sampler if i == 1 else config.second_sampler, shared.sd_model)
 
-        for stage in range(1, self.pass_num + 1):
-            self.hr_second_pass_steps = self.hr_steps + max(self.steps - self.hr_steps, 0) // 2 if stage == 1 and self.pass_num != 1 else self.hr_steps
-            self.cfg_scale = self.cfg_scale + self.cfg_per_pass
+        fs_width = (config.width - processed.width) // 2 + processed.width
+        fs_height = (config.height - processed.height) // 2 + processed.height
 
-            if stage == self.pass_num:
-                target_width = self.hr_upscale_to_x
-                target_height = self.hr_upscale_to_y
-            else:
-                target_width = int(self.width + add_target_width * stage)
-                target_height = int(self.height + add_target_height * stage)
+        image = images.resize_image(0, processed.images[0],
+                                    fs_width if i == 1 else config.width, fs_height if i == 1 else config.height,
+                                    upscaler_name=config.first_upscaler if i == 1 else config.second_upscaler)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = np.moveaxis(image, 2, 0)
+        decoded_sample = torch.from_numpy(image)
+        decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+        decoded_sample = 2.0 * decoded_sample - 1.0
+        samples = shared.sd_model.get_first_stage_encoding(shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0)))
+        image_conditioning = p.img2img_image_conditioning(decoded_sample, samples)
+        noise = processing.create_random_tensors(samples.shape[1:], seeds=[processed.seed], subseeds=[processed.subseed],
+                                                 subseed_strength=processed.subseed_strength, p=p)
 
-            scale = target_width / max(self.seed_resize_from_w, self.width)
+        if (config.first_morphological_noise if i == 1 else config.second_morphological_noise) != 0.0:
+            noise_mask = kornia.morphology.gradient(noise, torch.ones(5, 5).to(devices.device))
+            noise_mask = kornia.filters.median_blur(noise_mask, (3, 3)) / 5
+            noise *= noise_mask * (1 + (config.first_morphological_noise if i == 1
+                                        else config.second_morphological_noise))
 
-            upscaler = self.first_upscaler if stage == 1 and self.first_upscaler != 'None' else self.second_upscaler
-            if upscaler == 'From webui':
-                if latent_scale_mode is not None:
-                    samples = torch.nn.functional.interpolate(samples,
-                                                              size=(target_height // opt_f, target_width // opt_f),
-                                                              mode=latent_scale_mode["mode"],
-                                                              antialias=latent_scale_mode["antialias"])
-                    if getattr(self, "inpainting_mask_weight", shared.opts.inpainting_mask_weight) < 1.0:
-                        image_conditioning = self.img2img_image_conditioning(processing.decode_first_stage(self.sd_model, samples),
-                                                                             samples)
-                    else:
-                        image_conditioning = self.txt2img_image_conditioning(samples)
-                else:
-                    decoded_samples = processing.decode_first_stage(self.sd_model, samples)
-                    if math.isnan(decoded_samples.min()):
-                        samples = torch.clamp(samples, -clamp_vae, clamp_vae)
-                        decoded_samples = processing.decode_first_stage(self.sd_model, samples)
-                    lowres_samples = torch.clamp((decoded_samples + 1.0) / 2.0, min=0.0, max=1.0)
+        steps = int(config.steps if i == 2 else max(((p.steps - config.steps) / 2) + config.steps, config.steps))
 
-                    batch_images = []
-                    for i, x_sample in enumerate(lowres_samples):
-                        x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
-                        x_sample = x_sample.astype(np.uint8)
-                        image = Image.fromarray(x_sample)
-
-                        image = images.resize_image(0, image, target_width, target_height,
-                                                    upscaler_name=self.hr_upscaler)
-                        image = np.array(image).astype(np.float32) / 255.0
-                        image = np.moveaxis(image, 2, 0)
-                        batch_images.append(image)
-
-                    decoded_samples = torch.from_numpy(np.array(batch_images))
-                    decoded_samples = decoded_samples.to(shared.device)
-                    decoded_samples = 2.0 * decoded_samples - 1.0
-
-                    samples = self.sd_model.get_first_stage_encoding(self.sd_model.encode_first_stage(decoded_samples))
-                    image_conditioning = self.img2img_image_conditioning(decoded_samples, samples)
-
-            else:
-                if upscaler == "Latent(nearest-exact)":
-                    samples = torch.nn.functional.interpolate(samples, size=(target_height // opt_f, target_width // opt_f),
-                                                              mode='nearest-exact')
-                else:
-                    samples = resize(samples, scale_factors=(scale, scale),
-                                     interp_method=getattr(interp_methods, 'lanczos2'))
-
-
-                if getattr(self, "inpainting_mask_weight", shared.opts.inpainting_mask_weight) < 1.0:
-                    image_conditioning = self.img2img_image_conditioning(processing.decode_first_stage(self.sd_model,
-                                                                         samples), samples)
-                else:
-                    image_conditioning = self.txt2img_image_conditioning(samples)
-            shared.state.nextjob()
-            if stage == 1:
-                self.sampler_name = first_sampler_name
-            if self.sampler_name == 'DPMU':
-                self.sampler = sd_samplers.create_sampler('DPM++ 2M', self.sd_model)
-                self.sampler.func = sampler_dpmu
-            else:
-                self.sampler = sd_samplers.create_sampler(self.sampler_name, self.sd_model)
-            self.noise = processing.create_random_tensors(samples.shape[1:], seeds=seeds, subseeds=subseeds,
-                                                          subseed_strength=subseed_strength,
-                                                          p=self, seed_resize_from_w=self.seed_resize_from_w,
-                                                          seed_resize_from_h=self.seed_resize_from_h)
-            x = None
-            samples = self.sampler.sample_img2img(self, samples, self.noise, hr_c or conditioning, hr_uc or unconditional_conditioning,
-                                                      steps=self.hr_second_pass_steps or self.steps,
-                                                      image_conditioning=image_conditioning)
-
-            devices.torch_gc()
-            self.seed_resize_from_w = target_width
-            self.seed_resize_from_h = target_height
-
-        return samples
+        cond = _cond.get_cond([config.prompt if config.prompt != '' else processed.prompt], 100)
+        uncond = _uncond.get_cond([config.negative_prompt if config.negative_prompt != '' else processed.negative_prompt],
+                                  100)
+        p.denoising_strength = config.first_denoise if i == 1 else config.second_denoise
+        p.cfg_scale += config.first_cfg if i == 1 else config.second_cfg
+        p.sampler_noise_scheduler_override = denoiser_override if (
+            config.first_noise_scheduler if i == 1 else config.second_noise_scheduler) != 'Default' else None
+        global _dpmu_step_shift
+        _dpmu_step_shift = 2.0 if (
+            config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
+                                         ) == 'Default' else 1.65 + config.dpmu_step_shift
+        with devices.autocast():
+            samples = sampler.sample_img2img(p, samples, noise, cond, uncond, steps=steps,
+                                             image_conditioning=image_conditioning)
+        devices.torch_gc()
+        decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
+        if math.isnan(decoded_sample.min()):
+            samples = torch.clamp(samples, -config.clamp_vae, config.clamp_vae)
+            decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
+        decoded_sample = torch.clamp((decoded_sample + 1.0) / 2.0, min=0.0, max=1.0).squeeze()
+        x_sample = 255. * np.moveaxis(decoded_sample.cpu().numpy(), 0, 2)
+        x_sample = x_sample.astype(np.uint8)
+        image = Image.fromarray(x_sample)
+        processed.images[0] = image
