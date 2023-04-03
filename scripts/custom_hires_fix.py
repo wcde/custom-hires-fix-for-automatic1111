@@ -1,4 +1,4 @@
-import sys
+import os
 from os.path import exists
 from modules import scripts, shared, prompt_parser
 import gradio as gr
@@ -7,11 +7,13 @@ import utils
 
 utils.safe_import('kornia')
 utils.safe_import('omegaconf')
+utils.safe_import('pathlib')
 from omegaconf import DictConfig, OmegaConf
+from pathlib import Path
 
 cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
 uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
-config_path = './extensions/custom-hires-fix-for-automatic1111/config.yaml'
+config_path = Path(__file__).parent.resolve() / '../config.yaml'
 
 
 class CustomHiresFix(scripts.Script):
