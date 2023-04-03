@@ -97,6 +97,8 @@ class CustomHiresFix(scripts.Script):
                 dpmu_step_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01,
                                             label="DPMU step shift (color correction)",
                                             value=self.config.get('dpmu_step_shift', 0.0))
+            with gr.Row():
+                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
@@ -108,7 +110,7 @@ class CustomHiresFix(scripts.Script):
               first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
               first_morphological_noise, second_morphological_noise,
               first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
-              dpmu_step_shift, prompt, negative_prompt]
+              dpmu_step_shift, prompt, negative_prompt, clamp_vae]
         for elem in ui:
             setattr(elem, "do_not_save_to_config", True)
         return ui
@@ -119,7 +121,7 @@ class CustomHiresFix(scripts.Script):
                     first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
                     first_morphological_noise, second_morphological_noise,
                     first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
-                    dpmu_step_shift, prompt, negative_prompt
+                    dpmu_step_shift, prompt, negative_prompt, clamp_vae
                     ):
         if not enable:
             return processed
@@ -143,6 +145,7 @@ class CustomHiresFix(scripts.Script):
         self.config.dpmu_step_shift = dpmu_step_shift
         self.config.dpmu_factor = dpmu_factor
         self.config.first_sampler_name = first_sampler
+        self.config.clamp_vae = clamp_vae
         self.config.orig_cfg = p.cfg_scale
         self.config.callback_set = False
         OmegaConf.save(self.config, config_path)
