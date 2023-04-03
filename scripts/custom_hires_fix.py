@@ -97,7 +97,6 @@ class CustomHiresFix(scripts.Script):
                 dpmu_step_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01,
                                             label="DPMU step shift (color correction)",
                                             value=self.config.get('dpmu_step_shift', 0.0))
-            with gr.Row():
                 clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)

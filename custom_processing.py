@@ -104,6 +104,7 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
         _dpmu_step_shift = 2.0 if (
             config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
                                          ) == 'Default' else 1.65 + config.dpmu_step_shift
+        devices.torch_gc()
         with devices.autocast():
             samples = sampler.sample_img2img(p, samples, noise, cond, uncond, steps=steps,
                                              image_conditioning=image_conditioning)
