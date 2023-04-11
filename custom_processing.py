@@ -88,9 +88,13 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
 
             if (config.first_morphological_noise if i == 1 else config.second_morphological_noise) != 0.0:
                 noise_mask = kornia.morphology.gradient(noise, torch.ones(5, 5).to(devices.device))
-                noise_mask = kornia.filters.median_blur(noise_mask, (3, 3)) / 5
-                noise *= noise_mask * (1 + (config.first_morphological_noise if i == 1
-                                            else config.second_morphological_noise))
+                blur = config.first_morphological_noise_blur if i == 1 else config.second_morphological_noise_blur
+                if blur != 0:
+                    noise_mask = kornia.filters.median_blur(noise_mask, (blur, blur))
+                noise_mask = (noise_mask / noise_mask.max()) * (config.first_morphological_noise if i == 1
+                                                                else config.second_morphological_noise)
+                noise = noise * (1.0 + noise_mask - ((config.first_morphological_noise if i == 1
+                                                     else config.second_morphological_noise) / 2))
 
             steps = int(config.steps if i == 2 else max(((p.steps - config.steps) / 2) + config.steps, config.steps))
 
@@ -105,12 +109,12 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             _dpmu_step_shift = 2.0 if (
                 config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
                                              ) == 'Default' else 1.65 + config.dpmu_step_shift
-            devices.torch_gc()
             samples = sampler.sample_img2img(p, samples.to(devices.dtype), noise, cond, uncond, steps=steps,
                                                  image_conditioning=image_conditioning).to(devices.dtype_vae)
             devices.torch_gc()
             decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
             if math.isnan(decoded_sample.min()):
+                devices.torch_gc()
                 samples = torch.clamp(samples, -config.clamp_vae, config.clamp_vae)
                 decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
             decoded_sample = torch.clamp((decoded_sample + 1.0) / 2.0, min=0.0, max=1.0).squeeze()

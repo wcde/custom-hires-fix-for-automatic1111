@@ -72,12 +72,19 @@ class CustomHiresFix(scripts.Script):
                 second_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (2)",
                                            value=self.config.get('second_denoise', 0.50))
             with gr.Row():
-                first_morphological_noise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01,
-                                                      label="Morphological noise (0.0 to disable) (1)",
+                first_morphological_noise = gr.Slider(minimum=0.0, maximum=1.0, step=0.01,
+                                                      label="Morphological noise (1)",
                                                       value=self.config.get('first_morphological_noise', 0.0))
-                second_morphological_noise = gr.Slider(minimum=-0.3, maximum=0.3, step=0.01,
-                                                       label="Morphological noise (0.0 to disable) (2)",
+                second_morphological_noise = gr.Slider(minimum=0.0, maximum=1.0, step=0.01,
+                                                       label="Morphological noise (2)",
                                                        value=self.config.get('second_morphological_noise', 0.0))
+            with gr.Row():
+                first_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
+                                                      label="Morph mask blur (1)",
+                                                      value=self.config.get('first_morphological_noise_blur', 0))
+                second_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
+                                                       label="Morph mask blur (2)",
+                                                       value=self.config.get('second_morphological_noise_blur', 0))
             with gr.Row():
                 first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
                                             value=self.config.get('first_sampler', 'DPMU'))
@@ -107,7 +114,7 @@ class CustomHiresFix(scripts.Script):
 
         ui = [enable, width, height, steps,
               first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-              first_morphological_noise, second_morphological_noise,
+              first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
               first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
               dpmu_step_shift, prompt, negative_prompt, clamp_vae]
         for elem in ui:
@@ -118,7 +125,7 @@ class CustomHiresFix(scripts.Script):
     def postprocess(self, p, processed,
                     enable, width, height, steps,
                     first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
-                    first_morphological_noise, second_morphological_noise,
+                    first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
                     first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
                     dpmu_step_shift, prompt, negative_prompt, clamp_vae
                     ):
@@ -141,6 +148,8 @@ class CustomHiresFix(scripts.Script):
         self.config.second_denoise = second_denoise
         self.config.first_morphological_noise = first_morphological_noise
         self.config.second_morphological_noise = second_morphological_noise
+        self.config.first_morphological_noise_blur = first_morphological_noise_blur
+        self.config.second_morphological_noise_blur = second_morphological_noise_blur
         self.config.dpmu_step_shift = dpmu_step_shift
         self.config.dpmu_factor = dpmu_factor
         self.config.first_sampler_name = first_sampler
