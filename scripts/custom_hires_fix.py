@@ -81,10 +81,10 @@ class CustomHiresFix(scripts.Script):
             with gr.Row():
                 first_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
                                                       label="Morph mask blur (1)",
-                                                      value=self.config.get('first_morphological_noise_blur', 0))
+                                                      value=self.config.get('first_morphological_noise_blur', 3))
                 second_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
                                                        label="Morph mask blur (2)",
-                                                       value=self.config.get('second_morphological_noise_blur', 0))
+                                                       value=self.config.get('second_morphological_noise_blur', 3))
             with gr.Row():
                 first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
                                             value=self.config.get('first_sampler', 'DPMU'))
