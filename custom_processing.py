@@ -15,6 +15,7 @@ _dpmu_step_shift = 2.0
 _dpmu_factor = 1.0
 _cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
 _uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
+_processing = False
 
 
 @torch.no_grad()
@@ -46,6 +47,10 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
 
 
 def upscale(p: processing.StableDiffusionProcessing, processed: processing.Processed, config: DictConfig):
+    global _processing
+    _processing = True
+    orig_clip_skip = shared.opts.CLIP_stop_at_last_layers
+    shared.opts.CLIP_stop_at_last_layers = config.clip_skip
     ratio = p.width / p.height
     config.width = config.width if config.width > 0 else int(config.height * ratio)
     config.height = config.height if config.height > 0 else int(config.width / ratio)
@@ -57,6 +62,8 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
                                                            devices.device)
 
             def denoise_callback(denoiser_params: script_callbacks.CFGDenoiserParams):
+                if _processing:
+                    denoiser_params.sigma[-1] = denoiser_params.sigma[0] * (1 - config.smoothness / 100)
                 if denoiser_params.sampling_step > 0:
                     p.cfg_scale = config.orig_cfg
 
@@ -124,3 +131,6 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             x_sample = x_sample.astype(np.uint8)
             image = Image.fromarray(x_sample)
             processed.images[0] = image
+    shared.opts.CLIP_stop_at_last_layers = orig_clip_skip
+    _processing = False
+    return processed
