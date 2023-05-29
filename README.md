@@ -1,5 +1,5 @@
 # Custom Hires Fix (webui Extension)
-## Webui Extension for customizing highres fix and improve details (currently separated from origanal highres fix)
+## Webui Extension for customizing highres fix and improve details (currently separated from original highres fix)
 
 #### Update 29.05.23:
 - added ToMe optomization in second pass, latest Auto1111 update required, controlled via "Token merging ratio for high-res pass" in settings
