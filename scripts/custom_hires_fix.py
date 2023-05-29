@@ -89,9 +89,9 @@ class CustomHiresFix(scripts.Script):
                                                        label="Morph mask blur (2)",
                                                        value=self.config.get('second_morphological_noise_blur', 3))
             with gr.Row():
-                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
-                                            value=self.config.get('first_sampler', 'DPMU'))
-                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (2)',
+                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPM++ 2M SDE', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
+                                            value=self.config.get('first_sampler', 'DPM++ 2M SDE'))
+                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPM++ 2M SDE', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (2)',
                                              value=self.config.get('second_sampler', 'DPMU'))
             with gr.Row():
                 first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'],
