@@ -45,9 +45,8 @@ class CustomHiresFix(scripts.Script):
                                   label="Steps",
                                   value=self.config.get('steps', 12))
                 smoothness = gr.Slider(minimum=-1, maximum=3, step=1,
-                                  label="Smoothness",
-                                  value=self.config.get('smoothness', 1))
-
+                                        label="Smoothness",
+                                        value=self.config.get('smoothness', 1))
             with gr.Row():
                 prompt = gr.Textbox(label='Prompt for upscale',
                                     placeholder='Leave empty for using generation prompt',
@@ -113,6 +112,7 @@ class CustomHiresFix(scripts.Script):
                                             label="Clip skip",
                                             value=self.config.get('clip_skip', 2))
                 clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
+            sharp = gr.Checkbox(label='Sharp', value=self.config.get('sharp', False))
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
@@ -120,7 +120,7 @@ class CustomHiresFix(scripts.Script):
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
-        ui = [enable, width, height, steps, smoothness,
+        ui = [enable, width, height, steps, smoothness, sharp,
               first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
               first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
               first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
@@ -131,7 +131,7 @@ class CustomHiresFix(scripts.Script):
 
 
     def postprocess(self, p, processed,
-                    enable, width, height, steps, smoothness,
+                    enable, width, height, steps, smoothness, sharp,
                     first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
                     first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
                     first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
@@ -145,6 +145,7 @@ class CustomHiresFix(scripts.Script):
         self.config.negative_prompt = negative_prompt
         self.config.steps = steps
         self.config.smoothness = smoothness
+        self.config.sharp = sharp
         self.config.first_cfg = first_cfg
         self.config.second_cfg = second_cfg
         self.config.first_sampler = first_sampler

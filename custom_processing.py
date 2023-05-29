@@ -7,6 +7,7 @@ import torch
 from tqdm import trange
 from k_diffusion import sampling
 import modules.images as images
+import modules.sd_models as sd_models
 import utils
 from modules import processing, sd_samplers, shared, devices, sd_samplers_kdiffusion, prompt_parser, script_callbacks
 
@@ -62,8 +63,12 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
                                                            devices.device)
 
             def denoise_callback(denoiser_params: script_callbacks.CFGDenoiserParams):
-                if _processing:
-                    denoiser_params.sigma[-1] = denoiser_params.sigma[0] * (1 - config.smoothness / 100)
+                if _processing and config.smoothness != 0:
+                    if config.sharp:
+                        sharp = (denoiser_params.total_sampling_steps - denoiser_params.sampling_step) / (denoiser_params.total_sampling_steps * 100)
+                    else:
+                        sharp = 0
+                    denoiser_params.sigma[-1] = denoiser_params.sigma[0] * ((1 - config.smoothness / 100) + sharp)
                 if denoiser_params.sampling_step > 0:
                     p.cfg_scale = config.orig_cfg
 
@@ -118,6 +123,10 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             _dpmu_step_shift = 2.0 if (
                 config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
                                              ) == 'Default' else 1.65 + config.dpmu_step_shift
+            
+            if (i == 2):
+                sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio(for_hr=True))
+            
             samples = sampler.sample_img2img(p, samples.to(devices.dtype), noise, cond, uncond, steps=steps,
                                                  image_conditioning=image_conditioning).to(devices.dtype_vae)
             devices.torch_gc()
@@ -132,5 +141,6 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             image = Image.fromarray(x_sample)
             processed.images[0] = image
     shared.opts.CLIP_stop_at_last_layers = orig_clip_skip
+    sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio())
     _processing = False
     return processed
