@@ -105,10 +105,9 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
                     if blur == 2 or blur == 4:
                         blur = 3
                     noise_mask = kornia.filters.median_blur(noise_mask, (blur, blur))
-                noise_mask = (noise_mask / noise_mask.max()) * (config.first_morphological_noise if i == 1
+                noise_mask = (0.1 + noise_mask / noise_mask.max()) * (config.first_morphological_noise if i == 1
                                                                 else config.second_morphological_noise)
-                noise = noise * (1.0 + noise_mask - ((config.first_morphological_noise if i == 1
-                                                     else config.second_morphological_noise) / 2))
+                noise = noise * noise_mask
 
             steps = int(config.steps if i == 2 else max(((p.steps - config.steps) / 2) + config.steps, config.steps))
 
