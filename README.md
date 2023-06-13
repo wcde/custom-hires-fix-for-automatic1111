@@ -1,8 +1,9 @@
 # Custom Hires Fix (webui Extension)
 ## Webui Extension for customizing highres fix and improve details (currently separated from original highres fix)
 
-All upscaled images automatically saved by webui in temp folder, you can set custom dir in settings ```Saving images/grids -> Directory for temporary images```
 
+#### Update 13.06.23:
+- added gaussian noise instead of random
 
 #### Update 29.05.23:
 - added ToMe optomization in second pass, latest Auto1111 update required, controlled via "Token merging ratio for high-res pass" in settings

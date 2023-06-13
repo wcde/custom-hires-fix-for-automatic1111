@@ -40,13 +40,9 @@ class CustomHiresFix(scripts.Script):
                 height = gr.Slider(minimum=512, maximum=2048, step=8,
                                    label="Upscale height to",
                                    value=self.config.get('height', 0), allow_flagging='never', show_progress=False)
-            with gr.Row():
                 steps = gr.Slider(minimum=5, maximum=25, step=1,
                                   label="Steps",
                                   value=self.config.get('steps', 12))
-                smoothness = gr.Slider(minimum=-1, maximum=3, step=1,
-                                        label="Smoothness",
-                                        value=self.config.get('smoothness', 1))
             with gr.Row():
                 prompt = gr.Textbox(label='Prompt for upscale',
                                     placeholder='Leave empty for using generation prompt',
@@ -74,6 +70,20 @@ class CustomHiresFix(scripts.Script):
                                           value=self.config.get('first_denoise', 0.50))
                 second_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (2)",
                                            value=self.config.get('second_denoise', 0.50))
+            with gr.Row():
+                first_smoothness = gr.Slider(minimum=-2, maximum=2, step=0.1,
+                                        label="Smoothness",
+                                        value=self.config.get('first_smoothness', 0))
+                second_smoothness = gr.Slider(minimum=-2, maximum=2, step=0.1,
+                                        label="Smoothness",
+                                        value=self.config.get('second_smoothness', 0))
+            with gr.Row():
+                first_noise_gen = gr.Dropdown(['Default', 'Gaussian'],
+                                                label='Noise (1)',
+                                                value=self.config.get('first_noise_gen', 'Default'))
+                second_noise_gen = gr.Dropdown(['Default', 'Gaussian'],
+                                                label='Noise (2)',
+                                                value=self.config.get('second_noise_gen', 'Default'))
             with gr.Row():
                 first_morphological_noise = gr.Slider(minimum=0.0, maximum=2.5, step=0.01,
                                                       label="Morphological noise (1)",
@@ -112,7 +122,6 @@ class CustomHiresFix(scripts.Script):
                                             label="Clip skip",
                                             value=self.config.get('clip_skip', 2))
                 clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
-            sharp = gr.Checkbox(label='Sharp', value=self.config.get('sharp', False))
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
@@ -120,8 +129,9 @@ class CustomHiresFix(scripts.Script):
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
-        ui = [enable, width, height, steps, smoothness, sharp,
-              first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
+        ui = [enable, width, height, steps,
+              first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise, 
+              first_smoothness, second_smoothness, first_noise_gen, second_noise_gen,
               first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
               first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
               dpmu_step_shift, prompt, negative_prompt, clip_skip, clamp_vae]
@@ -131,8 +141,9 @@ class CustomHiresFix(scripts.Script):
 
 
     def postprocess(self, p, processed,
-                    enable, width, height, steps, smoothness, sharp,
-                    first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,
+                    enable, width, height, steps,
+                    first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,  
+                    first_smoothness, second_smoothness, first_noise_gen, second_noise_gen,
                     first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
                     first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
                     dpmu_step_shift, prompt, negative_prompt, clip_skip, clamp_vae
@@ -144,8 +155,6 @@ class CustomHiresFix(scripts.Script):
         self.config.prompt = prompt
         self.config.negative_prompt = negative_prompt
         self.config.steps = steps
-        self.config.smoothness = smoothness
-        self.config.sharp = sharp
         self.config.first_cfg = first_cfg
         self.config.second_cfg = second_cfg
         self.config.first_sampler = first_sampler
@@ -156,6 +165,10 @@ class CustomHiresFix(scripts.Script):
         self.config.second_noise_scheduler = second_noise_scheduler
         self.config.first_denoise = first_denoise
         self.config.second_denoise = second_denoise
+        self.config.first_smoothness = first_smoothness
+        self.config.second_smoothness = second_smoothness
+        self.config.first_noise_gen = first_noise_gen
+        self.config.second_noise_gen = second_noise_gen
         self.config.first_morphological_noise = first_morphological_noise
         self.config.second_morphological_noise = second_morphological_noise
         self.config.first_morphological_noise_blur = first_morphological_noise_blur

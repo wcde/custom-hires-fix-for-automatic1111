@@ -16,7 +16,7 @@ _dpmu_step_shift = 2.0
 _dpmu_factor = 1.0
 _cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
 _uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
-_processing = False
+_processing = 0
 
 
 @torch.no_grad()
@@ -49,7 +49,6 @@ def sampler_dpmu(model, x, sigmas, extra_args=None, callback=None, disable=None)
 
 def upscale(p: processing.StableDiffusionProcessing, processed: processing.Processed, config: DictConfig):
     global _processing
-    _processing = True
     orig_clip_skip = shared.opts.CLIP_stop_at_last_layers
     shared.opts.CLIP_stop_at_last_layers = config.clip_skip
     ratio = p.width / p.height
@@ -57,18 +56,16 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
     config.height = config.height if config.height > 0 else int(config.width / ratio)
     with devices.autocast():
         for i in [1, 2]:
+            _processing = i
             def denoiser_override(n):
                 scheduler = config.first_noise_scheduler if i == 1 else config.second_noise_scheduler
                 return sampling.get_sigmas_polyexponential(n, 0.01, 15 if scheduler == 'High denoising' else 7, 0.5,
                                                            devices.device)
 
             def denoise_callback(denoiser_params: script_callbacks.CFGDenoiserParams):
-                if _processing and config.smoothness != 0:
-                    if config.sharp:
-                        sharp = (denoiser_params.total_sampling_steps - denoiser_params.sampling_step) / (denoiser_params.total_sampling_steps * 100)
-                    else:
-                        sharp = 0
-                    denoiser_params.sigma[-1] = denoiser_params.sigma[0] * ((1 - config.smoothness / 100) + sharp)
+                smoothness = config.first_smoothness if _processing == 1 else config.second_smoothness
+                if _processing != 0 and smoothness != 0:
+                    denoiser_params.sigma[-1] = denoiser_params.sigma[0] * (1 - smoothness / 100)
                 if denoiser_params.sampling_step > 0:
                     p.cfg_scale = config.orig_cfg
 
@@ -95,8 +92,12 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             decoded_sample = 2.0 * decoded_sample - 1.0
             samples = shared.sd_model.get_first_stage_encoding(shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0)))
             image_conditioning = p.img2img_image_conditioning(decoded_sample, samples)
-            noise = processing.create_random_tensors(samples.shape[1:], seeds=[processed.seed], subseeds=[processed.subseed],
-                                                     subseed_strength=processed.subseed_strength, p=p)
+            if (config.first_noise_gen if i == 1 else config.second_noise_gen) == 'Default':
+                noise = processing.create_random_tensors(samples.shape[1:], seeds=[processed.seed], subseeds=[processed.subseed],
+                                                        subseed_strength=processed.subseed_strength, p=p)
+            else:
+                noise = torch.zeros_like(samples)
+                noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
 
             if (config.first_morphological_noise if i == 1 else config.second_morphological_noise) != 0.0:
                 noise_mask = kornia.morphology.gradient(samples, torch.ones(5, 5).to(devices.device))
@@ -141,5 +142,5 @@ def upscale(p: processing.StableDiffusionProcessing, processed: processing.Proce
             processed.images[0] = image
     shared.opts.CLIP_stop_at_last_layers = orig_clip_skip
     sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio())
-    _processing = False
+    _processing = 0
     return processed
