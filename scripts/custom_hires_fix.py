@@ -93,14 +93,14 @@ class CustomHiresFix(scripts.Script):
                                      value=self.config.get('filter', 'Noise sync'))
                 strength = gr.Slider(minimum=1.0, maximum=3.5, step=0.1, label="Generation strength",
                                      value=self.config.get('strength', 2.0))
+                denoise_offset = gr.Slider(minimum=-0.05, maximum=0.15, step=0.01,
+                                           label="Denoise offset",
+                                           value=self.config.get('denoise_offset', 0.05))
             with gr.Accordion(label='Extra', open=False):
                 with gr.Row():
                     filter_offset = gr.Slider(minimum=-0.5, maximum=0.5, step=0.1,
                                               label="Filter offset (higher - smoother)",
                                               value=self.config.get('filter_offset', 0.0))
-                    denoise_offset = gr.Slider(minimum=-0.1, maximum=0.05, step=0.01,
-                                               label="Denoise offset",
-                                               value=self.config.get('denoise_offset', 0.0))
                     clip_skip = gr.Slider(minimum=0, maximum=5, step=1,
                                           label="Clip skip for upscale (0 - not change)",
                                           value=self.config.get('clip_skip', 0))
@@ -152,9 +152,9 @@ class CustomHiresFix(scripts.Script):
             if self.step == 1 and self.config.strength != 1.0:
                 params.sigma[-1] = params.sigma[0] * (1 - (1 - self.config.strength) / 100)
             elif self.step == 2 and self.config.filter == 'Noise sync':
-                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset) / 50)
+                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset - (self.config.denoise_offset * 5)) / 50)
             elif self.step == 2 and self.config.filter == 'Combined':
-                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset) / 100)
+                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset - (self.config.denoise_offset * 5)) / 100)
 
         if self.callback_set is False:
             script_callbacks.on_cfg_denoiser(denoise_callback)
@@ -205,7 +205,7 @@ class CustomHiresFix(scripts.Script):
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         steps = int(max(((self.p.steps - self.config.steps) / 2) + self.config.steps, self.config.steps))
-        self.p.denoising_strength = 0.45 + self.config.denoise_offset
+        self.p.denoising_strength = 0.45 + self.config.denoise_offset * 0.2
         self.p.cfg_scale += 3
 
         def denoiser_override(n):
