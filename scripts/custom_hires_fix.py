@@ -182,8 +182,8 @@ class CustomHiresFix(scripts.Script):
             negative_prompt = self.p.negative_prompt.strip()
 
         with devices.autocast():
-            self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [prompt], 100)
-            self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, [negative_prompt], 100)
+            self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [prompt], self.config.steps)
+            self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, [negative_prompt], self.config.steps)
 
     def gen(self, x):
         self.step = 1
@@ -205,7 +205,7 @@ class CustomHiresFix(scripts.Script):
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         steps = int(max(((self.p.steps - self.config.steps) / 2) + self.config.steps, self.config.steps))
-        self.p.denoising_strength = 0.5 + self.config.denoise_offset
+        self.p.denoising_strength = 0.45 + self.config.denoise_offset
         self.p.cfg_scale += 3
 
         def denoiser_override(n):
@@ -247,7 +247,7 @@ class CustomHiresFix(scripts.Script):
         image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
-        self.p.denoising_strength = 0.5 + self.config.denoise_offset
+        self.p.denoising_strength = 0.45 + self.config.denoise_offset
         self.p.cfg_scale += 3
 
         if self.config.filter == 'Morphological':
