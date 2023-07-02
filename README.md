@@ -2,6 +2,11 @@
 ## Webui Extension for customizing highres fix and improve details (currently separated from original highres fix)
 
 
+#### Update 02.07.23:
+- code rewritten again
+- simplified settings
+- fixed batch generation and image saving
+
 #### Update 13.06.23:
 - added gaussian noise instead of random
 

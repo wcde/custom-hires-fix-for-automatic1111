@@ -1,18 +1,36 @@
-import os
+import math
 from os.path import exists
-from modules import scripts, shared, prompt_parser
-import gradio as gr
-import custom_processing
-import utils
+from modules import scripts, shared, processing, sd_samplers, script_callbacks
+from modules import devices, prompt_parser, sd_models
+import modules.images as images
+from k_diffusion import sampling
 
-utils.safe_import('kornia')
-utils.safe_import('omegaconf')
-utils.safe_import('pathlib')
+import gradio as gr
+import numpy as np
+from PIL import Image
+import torch
+
+
+def safe_import(import_name: str, pkg_name: str | None = None):
+    try:
+        __import__(import_name)
+    except Exception:
+        pkg_name = pkg_name or import_name
+        import pip
+        if hasattr(pip, 'main'):
+            pip.main(['install', pkg_name])
+        else:
+            pip._internal.main(['install', pkg_name])
+        __import__(import_name)
+
+
+safe_import('kornia')
+safe_import('omegaconf')
+safe_import('pathlib')
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
+import kornia
 
-cond = utils.CondCache(prompt_parser.get_multicond_learned_conditioning)
-uncond = utils.CondCache(prompt_parser.get_learned_conditioning)
 config_path = Path(__file__).parent.resolve() / '../config.yaml'
 
 
@@ -22,7 +40,16 @@ class CustomHiresFix(scripts.Script):
         if not exists(config_path):
             open(config_path, 'w').close()
         self.config: DictConfig = OmegaConf.load(config_path)
-        self.config.callback_set = False
+        self.callback_set = False
+        self.orig_clip_skip = None
+        self.orig_cfg = None
+        self.p: processing.StableDiffusionProcessing = None
+        self.pp = None
+        self.sampler = None
+        self.cond = None
+        self.uncond = None
+        self.step = None
+        self.tv = None
 
     def title(self):
         return "Custom Hires Fix"
@@ -40,20 +67,20 @@ class CustomHiresFix(scripts.Script):
                 height = gr.Slider(minimum=512, maximum=2048, step=8,
                                    label="Upscale height to",
                                    value=self.config.get('height', 0), allow_flagging='never', show_progress=False)
-                steps = gr.Slider(minimum=5, maximum=25, step=1,
+                steps = gr.Slider(minimum=8, maximum=25, step=1,
                                   label="Steps",
-                                  value=self.config.get('steps', 12))
+                                  value=self.config.get('steps', 15))
             with gr.Row():
-                prompt = gr.Textbox(label='Prompt for upscale',
+                prompt = gr.Textbox(label='Prompt for upscale (added to generation prompt)',
                                     placeholder='Leave empty for using generation prompt',
                                     value=self.config.get('prompt', ''))
             with gr.Row():
-                negative_prompt = gr.Textbox(label='Negative prompt for upscale',
+                negative_prompt = gr.Textbox(label='Negative prompt for upscale (replaces generation prompt)',
                                              placeholder='Leave empty for using generation negative prompt',
                                              value=self.config.get('negative_prompt', ''))
             with gr.Row():
                 first_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
-                                                if x.name not in ['None', 'Lanczos', 'Nearest']]],
+                                                if x.name not in ['None', 'Nearest']]],
                                              label='First upscaler',
                                              value=self.config.get('first_upscaler', 'R-ESRGAN 4x+'))
                 second_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
@@ -61,67 +88,23 @@ class CustomHiresFix(scripts.Script):
                                               label='Second upscaler',
                                               value=self.config.get('second_upscaler', 'R-ESRGAN 4x+'))
             with gr.Row():
-                first_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (1)",
-                                      value=self.config.get('first_cfg', 5))
-                second_cfg = gr.Slider(minimum=0, maximum=10, step=1, label="CFG scale boost (2)",
-                                       value=self.config.get('second_cfg', 5))
-            with gr.Row():
-                first_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (1)",
-                                          value=self.config.get('first_denoise', 0.50))
-                second_denoise = gr.Slider(minimum=0.1, maximum=1.0, step=0.01, label="Denoise strength (2)",
-                                           value=self.config.get('second_denoise', 0.50))
-            with gr.Row():
-                first_smoothness = gr.Slider(minimum=-2, maximum=2, step=0.1,
-                                        label="Smoothness",
-                                        value=self.config.get('first_smoothness', 0))
-                second_smoothness = gr.Slider(minimum=-2, maximum=2, step=0.1,
-                                        label="Smoothness",
-                                        value=self.config.get('second_smoothness', 0))
-            with gr.Row():
-                first_noise_gen = gr.Dropdown(['Default', 'Gaussian'],
-                                                label='Noise (1)',
-                                                value=self.config.get('first_noise_gen', 'Default'))
-                second_noise_gen = gr.Dropdown(['Default', 'Gaussian'],
-                                                label='Noise (2)',
-                                                value=self.config.get('second_noise_gen', 'Default'))
-            with gr.Row():
-                first_morphological_noise = gr.Slider(minimum=0.0, maximum=2.5, step=0.01,
-                                                      label="Morphological noise (1)",
-                                                      value=self.config.get('first_morphological_noise', 0.0))
-                second_morphological_noise = gr.Slider(minimum=0.0, maximum=2.5, step=0.01,
-                                                       label="Morphological noise (2)",
-                                                       value=self.config.get('second_morphological_noise', 0.0))
-            with gr.Row():
-                first_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
-                                                      label="Morph mask blur (1)",
-                                                      value=self.config.get('first_morphological_noise_blur', 3))
-                second_morphological_noise_blur = gr.Slider(minimum=0, maximum=5, step=1,
-                                                       label="Morph mask blur (2)",
-                                                       value=self.config.get('second_morphological_noise_blur', 3))
-            with gr.Row():
-                first_sampler = gr.Dropdown(['DPM++ 2M', 'DPM++ 2M SDE', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (1)',
-                                            value=self.config.get('first_sampler', 'DPM++ 2M SDE'))
-                second_sampler = gr.Dropdown(['DPM++ 2M', 'DPM++ 2M SDE', 'DPMU', 'Euler a', 'DPM++ SDE'], label='Sampler (2)',
-                                             value=self.config.get('second_sampler', 'DPMU'))
-            with gr.Row():
-                first_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'],
-                                                    label='Noise scheduler (1)',
-                                                    value=self.config.get('first_noise_scheduler', 'Low denoising'))
-                second_noise_scheduler = gr.Dropdown(['High denoising', 'Low denoising', 'Default'],
-                                                     label='Noise scheduler (2)',
-                                                     value=self.config.get('second_noise_scheduler', 'Low denoising'))
-            with gr.Row():
-                dpmu_factor = gr.Slider(minimum=0.6, maximum=1.0, step=0.01,
-                                        label="DPMU output factor (color correction)",
-                                        value=self.config.get('dpmu_factor', 0.9))
-                dpmu_step_shift = gr.Slider(minimum=-0.2, maximum=0.2, step=0.01,
-                                            label="DPMU step shift (color correction)",
-                                            value=self.config.get('dpmu_step_shift', 0.0))
-            with gr.Row():
-                clip_skip = gr.Slider(minimum=1, maximum=5, step=1,
-                                            label="Clip skip",
-                                            value=self.config.get('clip_skip', 2))
-                clamp_vae = gr.Slider(minimum=1.0, maximum=10.0, step=1.0, label="Clamp VAE input (NaN VAE fix)", value=3.0)
+                filter = gr.Dropdown(['Noise sync', 'Morphological', 'Combined'],
+                                     label='Filter mode',
+                                     value=self.config.get('filter', 'Noise sync'))
+                strength = gr.Slider(minimum=1.0, maximum=3.5, step=0.1, label="Generation strength",
+                                     value=self.config.get('strength', 2.0))
+            with gr.Accordion(label='Extra', open=False):
+                with gr.Row():
+                    filter_offset = gr.Slider(minimum=-0.5, maximum=0.5, step=0.1,
+                                              label="Filter offset (higher - smoother)",
+                                              value=self.config.get('filter_offset', 0.0))
+                    denoise_offset = gr.Slider(minimum=-0.1, maximum=0.05, step=0.01,
+                                               label="Denoise offset",
+                                               value=self.config.get('denoise_offset', 0.0))
+                    clip_skip = gr.Slider(minimum=0, maximum=5, step=1,
+                                          label="Clip skip for upscale (0 - not change)",
+                                          value=self.config.get('clip_skip', 0))
+
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
@@ -129,57 +112,172 @@ class CustomHiresFix(scripts.Script):
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
-        ui = [enable, width, height, steps,
-              first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise, 
-              first_smoothness, second_smoothness, first_noise_gen, second_noise_gen,
-              first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
-              first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
-              dpmu_step_shift, prompt, negative_prompt, clip_skip, clamp_vae]
+        ui = [enable, width, height, steps, first_upscaler, second_upscaler,
+              prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip]
         for elem in ui:
             setattr(elem, "do_not_save_to_config", True)
         return ui
 
-
-    def postprocess(self, p, processed,
-                    enable, width, height, steps,
-                    first_upscaler, second_upscaler, first_cfg, second_cfg, first_denoise, second_denoise,  
-                    first_smoothness, second_smoothness, first_noise_gen, second_noise_gen,
-                    first_morphological_noise, second_morphological_noise, first_morphological_noise_blur, second_morphological_noise_blur,
-                    first_sampler, second_sampler, first_noise_scheduler, second_noise_scheduler, dpmu_factor,
-                    dpmu_step_shift, prompt, negative_prompt, clip_skip, clamp_vae
-                    ):
+    def postprocess_image(self, p, pp: scripts.PostprocessImageArgs,
+                          enable, width, height, steps, first_upscaler, second_upscaler,
+                          prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip
+                          ):
         if not enable:
-            return processed
+            return
+        self.step = 0
+        self.p = p
+        self.pp = pp
         self.config.width = width
         self.config.height = height
-        self.config.prompt = prompt
-        self.config.negative_prompt = negative_prompt
+        self.config.prompt = prompt.strip()
+        self.config.negative_prompt = negative_prompt.strip()
         self.config.steps = steps
-        self.config.first_cfg = first_cfg
-        self.config.second_cfg = second_cfg
-        self.config.first_sampler = first_sampler
-        self.config.second_sampler = second_sampler
         self.config.first_upscaler = first_upscaler
         self.config.second_upscaler = second_upscaler
-        self.config.first_noise_scheduler = first_noise_scheduler
-        self.config.second_noise_scheduler = second_noise_scheduler
-        self.config.first_denoise = first_denoise
-        self.config.second_denoise = second_denoise
-        self.config.first_smoothness = first_smoothness
-        self.config.second_smoothness = second_smoothness
-        self.config.first_noise_gen = first_noise_gen
-        self.config.second_noise_gen = second_noise_gen
-        self.config.first_morphological_noise = first_morphological_noise
-        self.config.second_morphological_noise = second_morphological_noise
-        self.config.first_morphological_noise_blur = first_morphological_noise_blur
-        self.config.second_morphological_noise_blur = second_morphological_noise_blur
-        self.config.dpmu_step_shift = dpmu_step_shift
-        self.config.dpmu_factor = dpmu_factor
-        self.config.first_sampler_name = first_sampler
+        self.config.strength = strength
+        self.config.filter = filter
+        self.config.filter_offset = filter_offset
+        self.config.denoise_offset = denoise_offset
         self.config.clip_skip = clip_skip
-        self.config.clamp_vae = clamp_vae
-        self.config.orig_cfg = p.cfg_scale
-        self.config.callback_set = False
+        self.orig_clip_skip = shared.opts.CLIP_stop_at_last_layers
+        self.orig_cfg = p.cfg_scale
+
+        if clip_skip > 0:
+            shared.opts.CLIP_stop_at_last_layers = clip_skip
+        self.sampler = sd_samplers.create_sampler('DPM++ 2M SDE', shared.sd_model)
+
+        def denoise_callback(params: script_callbacks.CFGDenoiserParams):
+            if params.sampling_step > 0:
+                p.cfg_scale = self.orig_cfg
+            if self.step == 1 and self.config.strength != 1.0:
+                params.sigma[-1] = params.sigma[0] * (1 - (1 - self.config.strength) / 100)
+            elif self.step == 2 and self.config.filter == 'Noise sync':
+                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset) / 50)
+            elif self.step == 2 and self.config.filter == 'Combined':
+                params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset) / 100)
+
+        if self.callback_set is False:
+            script_callbacks.on_cfg_denoiser(denoise_callback)
+            self.callback_set = True
+
+        with devices.autocast():
+            self.process_prompt()
+            shared.state.nextjob()
+            x = self.gen(pp.image)
+            shared.state.nextjob()
+            x = self.filter(x)
+        shared.opts.CLIP_stop_at_last_layers = self.orig_clip_skip
+        sd_models.apply_token_merging(p.sd_model, p.get_token_merging_ratio())
+        pp.image = x
         OmegaConf.save(self.config, config_path)
-        custom_processing._config = self.config
-        return custom_processing.upscale(p, processed, self.config)
+
+    def process_prompt(self):
+        prompt = self.p.prompt.strip().split('AND', 1)[0]
+        if self.config.prompt != '':
+            prompt = f'{prompt} BREAK {self.config.prompt}'
+
+        if self.config.negative_prompt != '':
+            negative_prompt = self.config.negative_prompt
+        else:
+            negative_prompt = self.p.negative_prompt.strip()
+
+        with devices.autocast():
+            self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [prompt], 100)
+            self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, [negative_prompt], 100)
+
+    def gen(self, x):
+        self.step = 1
+        ratio = x.width / x.height
+        width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
+        height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
+        width = ((width - x.width) // 2 + x.width)
+        height = ((height - x.height) // 2 + x.height)
+        image = images.resize_image(0, x, width, height,
+                                    upscaler_name=self.config.first_upscaler)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = np.moveaxis(image, 2, 0)
+        decoded_sample = torch.from_numpy(image)
+        decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+        decoded_sample = 2.0 * decoded_sample - 1.0
+        encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+        sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
+        noise = torch.zeros_like(sample)
+        noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
+        steps = int(max(((self.p.steps - self.config.steps) / 2) + self.config.steps, self.config.steps))
+        self.p.denoising_strength = 0.5 + self.config.denoise_offset
+        self.p.cfg_scale += 3
+
+        def denoiser_override(n):
+            sigmas = sampling.get_sigmas_polyexponential(n, 0.01, 15, 0.5, devices.device)
+            return sigmas
+
+        self.p.sampler_noise_scheduler_override = denoiser_override
+
+        sample = self.sampler.sample_img2img(self.p, sample.to(devices.dtype), noise, self.cond, self.uncond,
+                                             steps=steps, image_conditioning=image_conditioning).to(devices.dtype_vae)
+        b, c, w, h = sample.size()
+        self.tv = kornia.losses.TotalVariation()(sample).mean() / (w * h)
+        devices.torch_gc()
+        decoded_sample = processing.decode_first_stage(shared.sd_model, sample)
+        if math.isnan(decoded_sample.min()):
+            devices.torch_gc()
+            sample = torch.clamp(sample, -3, 3)
+            decoded_sample = processing.decode_first_stage(shared.sd_model, sample)
+        decoded_sample = torch.clamp((decoded_sample + 1.0) / 2.0, min=0.0, max=1.0).squeeze()
+        x_sample = 255. * np.moveaxis(decoded_sample.cpu().numpy(), 0, 2)
+        x_sample = x_sample.astype(np.uint8)
+        image = Image.fromarray(x_sample)
+        return image
+
+    def filter(self, x):
+        self.step = 2
+        ratio = x.width / x.height
+        width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
+        height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
+        sd_models.apply_token_merging(self.p.sd_model, self.p.get_token_merging_ratio(for_hr=True))
+        image = images.resize_image(0, x, width, height, upscaler_name=self.config.second_upscaler)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = np.moveaxis(image, 2, 0)
+        decoded_sample = torch.from_numpy(image)
+        decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+        decoded_sample = 2.0 * decoded_sample - 1.0
+        encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+        sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
+        noise = torch.zeros_like(sample)
+        noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
+        self.p.denoising_strength = 0.5 + self.config.denoise_offset
+        self.p.cfg_scale += 3
+
+        if self.config.filter == 'Morphological':
+            noise_mask = kornia.morphology.gradient(sample, torch.ones(5, 5).to(devices.device))
+            noise_mask = kornia.filters.median_blur(noise_mask, (3, 3))
+            noise_mask = (0.1 + noise_mask / noise_mask.max()) * (max(
+                (1.75 - (self.tv - 1) * 4), 1.75) - self.config.filter_offset)
+            noise = noise * noise_mask
+        elif self.config.filter == 'Combined':
+            noise_mask = kornia.morphology.gradient(sample, torch.ones(5, 5).to(devices.device))
+            noise_mask = kornia.filters.median_blur(noise_mask, (3, 3))
+            noise_mask = (0.1 + noise_mask / noise_mask.max()) * (max(
+                (1.75 - (self.tv - 1) / 2), 1.75) - self.config.filter_offset)
+            noise = noise * noise_mask
+
+        def denoiser_override(n):
+            return sampling.get_sigmas_polyexponential(n, 0.01, 7, 0.5, devices.device)
+
+        self.p.sampler_noise_scheduler_override = denoiser_override
+        samples = self.sampler.sample_img2img(self.p, sample.to(devices.dtype), noise, self.cond, self.uncond,
+                                              steps=self.config.steps, image_conditioning=image_conditioning
+                                              ).to(devices.dtype_vae)
+        devices.torch_gc()
+        decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
+        if math.isnan(decoded_sample.min()):
+            devices.torch_gc()
+            samples = torch.clamp(samples, -3, 3)
+            decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
+        decoded_sample = torch.clamp((decoded_sample + 1.0) / 2.0, min=0.0, max=1.0).squeeze()
+        x_sample = 255. * np.moveaxis(decoded_sample.cpu().numpy(), 0, 2)
+        x_sample = x_sample.astype(np.uint8)
+        image = Image.fromarray(x_sample)
+        return image
