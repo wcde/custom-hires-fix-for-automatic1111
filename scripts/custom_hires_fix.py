@@ -80,17 +80,17 @@ class CustomHiresFix(scripts.Script):
                                              value=self.config.get('negative_prompt', ''))
             with gr.Row():
                 first_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
-                                                if x.name not in ['None', 'Nearest']]],
+                                                if x.name not in ['None', 'Nearest']], 'Latent'],
                                              label='First upscaler',
                                              value=self.config.get('first_upscaler', 'R-ESRGAN 4x+'))
                 second_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
-                                                 if x.name not in ['None', 'Lanczos', 'Nearest']]],
+                                                 if x.name not in ['None', 'Nearest']], 'Latent'],
                                               label='Second upscaler',
                                               value=self.config.get('second_upscaler', 'R-ESRGAN 4x+'))
             with gr.Row():
-                filter = gr.Dropdown(['Noise sync', 'Morphological', 'Combined'],
+                filter = gr.Dropdown(['Noise sync (sharp)', 'Morphological (smooth)', 'Combined (balanced)'],
                                      label='Filter mode',
-                                     value=self.config.get('filter', 'Noise sync'))
+                                     value=self.config.get('filter', 'Noise sync (sharp)'))
                 strength = gr.Slider(minimum=1.0, maximum=3.5, step=0.1, label="Generation strength",
                                      value=self.config.get('strength', 2.0))
                 denoise_offset = gr.Slider(minimum=-0.05, maximum=0.15, step=0.01,
@@ -151,9 +151,9 @@ class CustomHiresFix(scripts.Script):
                 p.cfg_scale = self.orig_cfg
             if self.step == 1 and self.config.strength != 1.0:
                 params.sigma[-1] = params.sigma[0] * (1 - (1 - self.config.strength) / 100)
-            elif self.step == 2 and self.config.filter == 'Noise sync':
+            elif self.step == 2 and self.config.filter == 'Noise sync (sharp)':
                 params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset - (self.config.denoise_offset * 5)) / 50)
-            elif self.step == 2 and self.config.filter == 'Combined':
+            elif self.step == 2 and self.config.filter == 'Combined (balanced)':
                 params.sigma[-1] = params.sigma[0] * (1 - (self.tv - 1 + self.config.filter_offset - (self.config.denoise_offset * 5)) / 100)
 
         if self.callback_set is False:
@@ -190,11 +190,14 @@ class CustomHiresFix(scripts.Script):
         ratio = x.width / x.height
         width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
         height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
-        width = ((width - x.width) // 2 + x.width)
-        height = ((height - x.height) // 2 + x.height)
-        image = images.resize_image(0, x, width, height,
-                                    upscaler_name=self.config.first_upscaler)
-        image = np.array(image).astype(np.float32) / 255.0
+        width = int((width - x.width) // 2 + x.width)
+        height = int((height - x.height) // 2 + x.height)
+        
+        if self.config.first_upscaler != 'Latent':
+            x = images.resize_image(0, x, width, height,
+                                        upscaler_name=self.config.first_upscaler)
+            
+        image = np.array(x).astype(np.float32) / 255.0
         image = np.moveaxis(image, 2, 0)
         decoded_sample = torch.from_numpy(image)
         decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
@@ -202,6 +205,10 @@ class CustomHiresFix(scripts.Script):
         encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
         sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
         image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
+        
+        if self.config.first_upscaler == 'Latent':
+            sample = torch.nn.functional.interpolate(sample, (height // 8, width // 8), mode='nearest')
+        
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         steps = int(max(((self.p.steps - self.config.steps) / 2) + self.config.steps, self.config.steps))
@@ -236,8 +243,11 @@ class CustomHiresFix(scripts.Script):
         width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
         height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
         sd_models.apply_token_merging(self.p.sd_model, self.p.get_token_merging_ratio(for_hr=True))
-        image = images.resize_image(0, x, width, height, upscaler_name=self.config.second_upscaler)
-        image = np.array(image).astype(np.float32) / 255.0
+        
+        if self.config.second_upscaler != 'Latent':
+            x = images.resize_image(0, x, width, height, upscaler_name=self.config.second_upscaler)
+            
+        image = np.array(x).astype(np.float32) / 255.0
         image = np.moveaxis(image, 2, 0)
         decoded_sample = torch.from_numpy(image)
         decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
@@ -245,18 +255,22 @@ class CustomHiresFix(scripts.Script):
         encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
         sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
         image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
+        
+        if self.config.second_upscaler == 'Latent':
+            sample = torch.nn.functional.interpolate(sample, (height // 8, width // 8), mode='nearest')
+        
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         self.p.denoising_strength = 0.45 + self.config.denoise_offset
         self.p.cfg_scale += 3
 
-        if self.config.filter == 'Morphological':
+        if self.config.filter == 'Morphological (smooth)':
             noise_mask = kornia.morphology.gradient(sample, torch.ones(5, 5).to(devices.device))
             noise_mask = kornia.filters.median_blur(noise_mask, (3, 3))
             noise_mask = (0.1 + noise_mask / noise_mask.max()) * (max(
                 (1.75 - (self.tv - 1) * 4), 1.75) - self.config.filter_offset)
             noise = noise * noise_mask
-        elif self.config.filter == 'Combined':
+        elif self.config.filter == 'Combined (balanced)':
             noise_mask = kornia.morphology.gradient(sample, torch.ones(5, 5).to(devices.device))
             noise_mask = kornia.filters.median_blur(noise_mask, (3, 3))
             noise_mask = (0.1 + noise_mask / noise_mask.max()) * (max(
