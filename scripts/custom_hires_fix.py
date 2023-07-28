@@ -50,6 +50,8 @@ class CustomHiresFix(scripts.Script):
         self.uncond = None
         self.step = None
         self.tv = None
+        self.width = None 
+        self.height = None
 
     def title(self):
         return "Custom Hires Fix"
@@ -80,13 +82,20 @@ class CustomHiresFix(scripts.Script):
                                              value=self.config.get('negative_prompt', ''))
             with gr.Row():
                 first_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
-                                                if x.name not in ['None', 'Nearest']], 'Latent'],
+                                                if x.name not in ['None', 'Nearest', 'LDSR']]],
                                              label='First upscaler',
                                              value=self.config.get('first_upscaler', 'R-ESRGAN 4x+'))
                 second_upscaler = gr.Dropdown([*[x.name for x in shared.sd_upscalers
-                                                 if x.name not in ['None', 'Nearest']], 'Latent'],
+                                                 if x.name not in ['None', 'Nearest', 'LDSR']]],
                                               label='Second upscaler',
                                               value=self.config.get('second_upscaler', 'R-ESRGAN 4x+'))
+            with gr.Row():
+                first_latent = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, 
+                                         label="Latent upscale ratio (1)",
+                                         value=self.config.get('first_latent', 0.3))
+                second_latent = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, 
+                                         label="Latent upscale ratio (2)",
+                                         value=self.config.get('second_latent', 0.1))
             with gr.Row():
                 filter = gr.Dropdown(['Noise sync (sharp)', 'Morphological (smooth)', 'Combined (balanced)'],
                                      label='Filter mode',
@@ -98,7 +107,7 @@ class CustomHiresFix(scripts.Script):
                                            value=self.config.get('denoise_offset', 0.05))
             with gr.Accordion(label='Extra', open=False):
                 with gr.Row():
-                    filter_offset = gr.Slider(minimum=-0.5, maximum=0.5, step=0.1,
+                    filter_offset = gr.Slider(minimum=-1.0, maximum=1.0, step=0.1,
                                               label="Filter offset (higher - smoother)",
                                               value=self.config.get('filter_offset', 0.0))
                     clip_skip = gr.Slider(minimum=0, maximum=5, step=1,
@@ -112,14 +121,14 @@ class CustomHiresFix(scripts.Script):
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
-        ui = [enable, width, height, steps, first_upscaler, second_upscaler,
+        ui = [enable, width, height, steps, first_upscaler, second_upscaler, first_latent, second_latent,
               prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip]
         for elem in ui:
             setattr(elem, "do_not_save_to_config", True)
         return ui
 
     def postprocess_image(self, p, pp: scripts.PostprocessImageArgs,
-                          enable, width, height, steps, first_upscaler, second_upscaler,
+                          enable, width, height, steps, first_upscaler, second_upscaler, first_latent, second_latent,
                           prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip
                           ):
         if not enable:
@@ -134,6 +143,8 @@ class CustomHiresFix(scripts.Script):
         self.config.steps = steps
         self.config.first_upscaler = first_upscaler
         self.config.second_upscaler = second_upscaler
+        self.config.first_latent = first_latent
+        self.config.second_latent = second_latent
         self.config.strength = strength
         self.config.filter = filter
         self.config.filter_offset = filter_offset
@@ -161,7 +172,6 @@ class CustomHiresFix(scripts.Script):
             self.callback_set = True
 
         with devices.autocast():
-            self.process_prompt()
             shared.state.nextjob()
             x = self.gen(pp.image)
             shared.state.nextjob()
@@ -174,7 +184,7 @@ class CustomHiresFix(scripts.Script):
     def process_prompt(self):
         prompt = self.p.prompt.strip().split('AND', 1)[0]
         if self.config.prompt != '':
-            prompt = f'{prompt} BREAK {self.config.prompt}'
+            prompt = f'{prompt} {self.config.prompt}'
 
         if self.config.negative_prompt != '':
             negative_prompt = self.config.negative_prompt
@@ -182,32 +192,48 @@ class CustomHiresFix(scripts.Script):
             negative_prompt = self.p.negative_prompt.strip()
 
         with devices.autocast():
-            self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [prompt], self.config.steps)
-            self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, [negative_prompt], self.config.steps)
+            if self.width != None and self.height != None:
+                c = prompt_parser.SdConditioning([prompt], False, self.width, self.height)
+                uc = prompt_parser.SdConditioning([negative_prompt], False, self.width, self.height)
+            self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c, self.config.steps)
+            self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, uc, self.config.steps)
 
     def gen(self, x):
         self.step = 1
         ratio = x.width / x.height
-        width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
-        height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
-        width = int((width - x.width) // 2 + x.width)
-        height = int((height - x.height) // 2 + x.height)
+        self.width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
+        self.height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
+        self.width = int((self.width - x.width) // 2 + x.width)
+        self.height = int((self.height - x.height) // 2 + x.height)
+        with devices.autocast(), torch.inference_mode():
+            self.process_prompt()
         
-        if self.config.first_upscaler != 'Latent':
-            x = images.resize_image(0, x, width, height,
-                                        upscaler_name=self.config.first_upscaler)
+        x_big = None
+        if self.config.first_latent > 0:
+            image = np.array(x).astype(np.float32) / 255.0
+            image = np.moveaxis(image, 2, 0)
+            decoded_sample = torch.from_numpy(image)
+            decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+            decoded_sample = 2.0 * decoded_sample - 1.0
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+            x_big = torch.nn.functional.interpolate(sample, (self.height // 8, self.width // 8), mode='nearest')
             
-        image = np.array(x).astype(np.float32) / 255.0
-        image = np.moveaxis(image, 2, 0)
-        decoded_sample = torch.from_numpy(image)
-        decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
-        decoded_sample = 2.0 * decoded_sample - 1.0
-        encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
-        sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        if self.config.first_latent < 1:
+            x = images.resize_image(0, x, self.width, self.height,
+                                        upscaler_name=self.config.first_upscaler)
+            image = np.array(x).astype(np.float32) / 255.0
+            image = np.moveaxis(image, 2, 0)
+            decoded_sample = torch.from_numpy(image)
+            decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+            decoded_sample = 2.0 * decoded_sample - 1.0
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        else:
+            sample = x_big
+        if x_big is not None and self.config.first_latent != 1:
+            sample = (sample * (1 - self.config.first_latent)) + (x_big * self.config.first_latent)
         image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
-        
-        if self.config.first_upscaler == 'Latent':
-            sample = torch.nn.functional.interpolate(sample, (height // 8, width // 8), mode='nearest')
         
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
@@ -240,24 +266,37 @@ class CustomHiresFix(scripts.Script):
     def filter(self, x):
         self.step = 2
         ratio = x.width / x.height
-        width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
-        height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
+        self.width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
+        self.height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
         sd_models.apply_token_merging(self.p.sd_model, self.p.get_token_merging_ratio(for_hr=True))
+        with devices.autocast(), torch.inference_mode():
+            self.process_prompt()
         
-        if self.config.second_upscaler != 'Latent':
-            x = images.resize_image(0, x, width, height, upscaler_name=self.config.second_upscaler)
+        x_big = None
+        if self.config.second_latent > 0:
+            image = np.array(x).astype(np.float32) / 255.0
+            image = np.moveaxis(image, 2, 0)
+            decoded_sample = torch.from_numpy(image)
+            decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+            decoded_sample = 2.0 * decoded_sample - 1.0
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+            x_big = torch.nn.functional.interpolate(sample, (self.height // 8, self.width // 8), mode='nearest')
             
-        image = np.array(x).astype(np.float32) / 255.0
-        image = np.moveaxis(image, 2, 0)
-        decoded_sample = torch.from_numpy(image)
-        decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
-        decoded_sample = 2.0 * decoded_sample - 1.0
-        encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
-        sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        if self.config.second_latent < 1:
+            x = images.resize_image(0, x, self.width, self.height, upscaler_name=self.config.second_upscaler)
+            image = np.array(x).astype(np.float32) / 255.0
+            image = np.moveaxis(image, 2, 0)
+            decoded_sample = torch.from_numpy(image)
+            decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
+            decoded_sample = 2.0 * decoded_sample - 1.0
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
+        else:
+            sample = x_big
+        if x_big is not None and self.config.second_latent != 1:
+            sample = (sample * (1 - self.config.second_latent)) + (x_big * self.config.second_latent)
         image_conditioning = self.p.img2img_image_conditioning(decoded_sample, sample)
-        
-        if self.config.second_upscaler == 'Latent':
-            sample = torch.nn.functional.interpolate(sample, (height // 8, width // 8), mode='nearest')
         
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
