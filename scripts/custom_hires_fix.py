@@ -11,7 +11,7 @@ from PIL import Image
 import torch
 
 
-def safe_import(import_name: str, pkg_name: str | None = None):
+def safe_import(import_name, pkg_name = None):
     try:
         __import__(import_name)
     except Exception:
@@ -113,6 +113,10 @@ class CustomHiresFix(scripts.Script):
                     clip_skip = gr.Slider(minimum=0, maximum=5, step=1,
                                           label="Clip skip for upscale (0 - not change)",
                                           value=self.config.get('clip_skip', 0))
+                with gr.Row():
+                    sampler = gr.Dropdown(['Restart', 'DPM++ 2M SDE'],
+                                     label='Sampler',
+                                     value=self.config.get('sampler', 'DPM++ 2M SDE'))
 
         if is_img2img:
             width.change(fn=lambda x: gr.update(value=0), inputs=width, outputs=height)
@@ -122,14 +126,14 @@ class CustomHiresFix(scripts.Script):
             height.change(fn=lambda x: gr.update(value=0), inputs=height, outputs=width)
 
         ui = [enable, width, height, steps, first_upscaler, second_upscaler, first_latent, second_latent,
-              prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip]
+              prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip, sampler]
         for elem in ui:
             setattr(elem, "do_not_save_to_config", True)
         return ui
 
     def postprocess_image(self, p, pp: scripts.PostprocessImageArgs,
                           enable, width, height, steps, first_upscaler, second_upscaler, first_latent, second_latent,
-                          prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip
+                          prompt, negative_prompt, strength, filter, filter_offset, denoise_offset, clip_skip, sampler
                           ):
         if not enable:
             return
@@ -155,7 +159,7 @@ class CustomHiresFix(scripts.Script):
 
         if clip_skip > 0:
             shared.opts.CLIP_stop_at_last_layers = clip_skip
-        self.sampler = sd_samplers.create_sampler('DPM++ 2M SDE', shared.sd_model)
+        self.sampler = sd_samplers.create_sampler(sampler, shared.sd_model)
 
         def denoise_callback(params: script_callbacks.CFGDenoiserParams):
             if params.sampling_step > 0:
