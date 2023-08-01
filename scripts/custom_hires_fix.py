@@ -253,7 +253,7 @@ class CustomHiresFix(scripts.Script):
             return sigmas
 
         self.p.sampler_noise_scheduler_override = denoiser_override
-
+        self.p.batch_size = 1
         sample = self.sampler.sample_img2img(self.p, sample.to(devices.dtype), noise, self.cond, self.uncond,
                                              steps=steps, image_conditioning=image_conditioning).to(devices.dtype_vae)
         b, c, w, h = sample.size()
@@ -327,10 +327,12 @@ class CustomHiresFix(scripts.Script):
             return sampling.get_sigmas_polyexponential(n, 0.01, 7, 0.5, devices.device)
 
         self.p.sampler_noise_scheduler_override = denoiser_override
+        self.p.batch_size = 1
         samples = self.sampler.sample_img2img(self.p, sample.to(devices.dtype), noise, self.cond, self.uncond,
                                               steps=self.config.steps, image_conditioning=image_conditioning
                                               ).to(devices.dtype_vae)
         devices.torch_gc()
+        self.p.iteration += 1
         decoded_sample = processing.decode_first_stage(shared.sd_model, samples)
         if math.isnan(decoded_sample.min()):
             devices.torch_gc()
