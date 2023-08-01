@@ -196,9 +196,12 @@ class CustomHiresFix(scripts.Script):
             negative_prompt = self.p.negative_prompt.strip()
 
         with devices.autocast():
-            if self.width != None and self.height != None:
+            if self.width is not None and self.height is not None and hasattr(prompt_parser, 'SdConditioning'):
                 c = prompt_parser.SdConditioning([prompt], False, self.width, self.height)
                 uc = prompt_parser.SdConditioning([negative_prompt], False, self.width, self.height)
+            else:
+                c = [prompt]
+                uc = [negative_prompt]
             self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c, self.config.steps)
             self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, uc, self.config.steps)
 
@@ -219,7 +222,7 @@ class CustomHiresFix(scripts.Script):
             decoded_sample = torch.from_numpy(image)
             decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
             decoded_sample = 2.0 * decoded_sample - 1.0
-            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0).to(devices.dtype_vae))
             sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
             x_big = torch.nn.functional.interpolate(sample, (self.height // 8, self.width // 8), mode='nearest')
             
@@ -231,7 +234,7 @@ class CustomHiresFix(scripts.Script):
             decoded_sample = torch.from_numpy(image)
             decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
             decoded_sample = 2.0 * decoded_sample - 1.0
-            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0).to(devices.dtype_vae))
             sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
         else:
             sample = x_big
@@ -283,7 +286,7 @@ class CustomHiresFix(scripts.Script):
             decoded_sample = torch.from_numpy(image)
             decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
             decoded_sample = 2.0 * decoded_sample - 1.0
-            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0).to(devices.dtype_vae))
             sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
             x_big = torch.nn.functional.interpolate(sample, (self.height // 8, self.width // 8), mode='nearest')
             
@@ -294,7 +297,7 @@ class CustomHiresFix(scripts.Script):
             decoded_sample = torch.from_numpy(image)
             decoded_sample = decoded_sample.to(shared.device).to(devices.dtype_vae)
             decoded_sample = 2.0 * decoded_sample - 1.0
-            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0))
+            encoded_sample = shared.sd_model.encode_first_stage(decoded_sample.unsqueeze(0).to(devices.dtype_vae))
             sample = shared.sd_model.get_first_stage_encoding(encoded_sample)
         else:
             sample = x_big
