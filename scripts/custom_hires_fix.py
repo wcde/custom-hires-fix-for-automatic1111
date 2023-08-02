@@ -246,7 +246,7 @@ class CustomHiresFix(scripts.Script):
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         steps = int(max(((self.p.steps - self.config.steps) / 2) + self.config.steps, self.config.steps))
         self.p.denoising_strength = 0.45 + self.config.denoise_offset * 0.2
-        self.p.cfg_scale += 3
+        self.p.cfg_scale = self.orig_cfg + 3
 
         def denoiser_override(n):
             sigmas = sampling.get_sigmas_polyexponential(n, 0.01, 15, 0.5, devices.device)
@@ -308,7 +308,7 @@ class CustomHiresFix(scripts.Script):
         noise = torch.zeros_like(sample)
         noise = kornia.augmentation.RandomGaussianNoise(mean=0.0, std=1.0, p=1.0)(noise)
         self.p.denoising_strength = 0.45 + self.config.denoise_offset
-        self.p.cfg_scale += 3
+        self.p.cfg_scale = self.orig_cfg + 3
 
         if self.config.filter == 'Morphological (smooth)':
             noise_mask = kornia.morphology.gradient(sample, torch.ones(5, 5).to(devices.device))
