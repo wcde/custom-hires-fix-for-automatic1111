@@ -1,9 +1,11 @@
 import math
 from os.path import exists
-from modules import scripts, shared, processing, sd_samplers, script_callbacks
+
+from tqdm import trange
+from modules import scripts, shared, processing, sd_samplers, script_callbacks, rng
 from modules import devices, prompt_parser, sd_models
 import modules.images as images
-from k_diffusion import sampling
+import k_diffusion
 
 import gradio as gr
 import numpy as np
@@ -114,7 +116,7 @@ class CustomHiresFix(scripts.Script):
                                           label="Clip skip for upscale (0 - not change)",
                                           value=self.config.get('clip_skip', 0))
                 with gr.Row():
-                    sampler = gr.Dropdown(['Restart', 'DPM++ 2M SDE'],
+                    sampler = gr.Dropdown(['Restart', 'DPM++ 2M SDE', 'DPM++ 3M SDE', 'Restart + DPM++ 3M SDE'],
                                      label='Sampler',
                                      value=self.config.get('sampler', 'DPM++ 2M SDE'))
 
@@ -154,12 +156,16 @@ class CustomHiresFix(scripts.Script):
         self.config.filter_offset = filter_offset
         self.config.denoise_offset = denoise_offset
         self.config.clip_skip = clip_skip
+        self.config.sampler = sampler
         self.orig_clip_skip = shared.opts.CLIP_stop_at_last_layers
         self.orig_cfg = p.cfg_scale
-
+        
         if clip_skip > 0:
             shared.opts.CLIP_stop_at_last_layers = clip_skip
-        self.sampler = sd_samplers.create_sampler(sampler, shared.sd_model)
+        if 'Restart' in self.config.sampler:
+            self.sampler = sd_samplers.create_sampler('Restart', shared.sd_model)
+        else:
+            self.sampler = sd_samplers.create_sampler(sampler, shared.sd_model)
 
         def denoise_callback(params: script_callbacks.CFGDenoiserParams):
             if params.sampling_step > 0:
@@ -212,6 +218,7 @@ class CustomHiresFix(scripts.Script):
         self.height = self.config.height if self.config.height > 0 else int(self.config.width / ratio)
         self.width = int((self.width - x.width) // 2 + x.width)
         self.height = int((self.height - x.height) // 2 + x.height)
+        
         with devices.autocast(), torch.inference_mode():
             self.process_prompt()
         
@@ -249,9 +256,13 @@ class CustomHiresFix(scripts.Script):
         self.p.cfg_scale = self.orig_cfg + 3
 
         def denoiser_override(n):
-            sigmas = sampling.get_sigmas_polyexponential(n, 0.01, 15, 0.5, devices.device)
+            sigmas = k_diffusion.sampling.get_sigmas_polyexponential(n, 0.01, 15, 0.5, devices.device)
             return sigmas
-
+        
+        self.p.rng = rng.ImageRNG(sample.shape[1:], self.p.seeds, subseeds=self.p.subseeds, 
+                                  subseed_strength=self.p.subseed_strength, 
+                                  seed_resize_from_h=self.p.seed_resize_from_h, seed_resize_from_w=self.p.seed_resize_from_w)
+        
         self.p.sampler_noise_scheduler_override = denoiser_override
         self.p.batch_size = 1
         sample = self.sampler.sample_img2img(self.p, sample.to(devices.dtype), noise, self.cond, self.uncond,
@@ -271,6 +282,10 @@ class CustomHiresFix(scripts.Script):
         return image
 
     def filter(self, x):
+        if 'Restart' == self.config.sampler:
+            self.sampler = sd_samplers.create_sampler('Restart', shared.sd_model)
+        elif 'Restart + DPM++ 3M SDE' == self.config.sampler:
+            self.sampler = sd_samplers.create_sampler('DPM++ 3M SDE', shared.sd_model)
         self.step = 2
         ratio = x.width / x.height
         self.width = self.config.width if self.config.width > 0 else int(self.config.height * ratio)
@@ -324,7 +339,7 @@ class CustomHiresFix(scripts.Script):
             noise = noise * noise_mask
 
         def denoiser_override(n):
-            return sampling.get_sigmas_polyexponential(n, 0.01, 7, 0.5, devices.device)
+            return k_diffusion.sampling.get_sigmas_polyexponential(n, 0.01, 7, 0.5, devices.device)
 
         self.p.sampler_noise_scheduler_override = denoiser_override
         self.p.batch_size = 1
