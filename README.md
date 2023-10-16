@@ -2,6 +2,10 @@
 ## Webui Extension for customizing highres fix and improve details (currently separated from original highres fix)
 
 
+#### Update 16.10.23:
+- added ControlNet support: choose preprocessor/model in CN settings, but don't enable unit
+- added Lora support: put Lora in extension prompt to enable Lora only for upscaling, put Lora in negative prompt to disable active Lora
+
 #### Update 02.07.23:
 - code rewritten again
 - simplified settings
